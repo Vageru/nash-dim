@@ -150,6 +150,20 @@
   #viewer.on { display: flex; }
   #viewer img { max-width: 100%; max-height: 100%; object-fit: contain; }
   #viewer .cap { position: absolute; left: 0; right: 0; bottom: calc(18px + env(safe-area-inset-bottom)); color: #fff; text-align: center; padding: 0 20px; font-size: 15px; }
+  nav.tabs button { position: relative; }
+  .badge { position: absolute; top: 0; left: 50%; margin-left: 8px; min-width: 18px; height: 18px; border-radius: 9px; background: var(--danger); color: #fff;
+    font-size: 11px; font-weight: 700; display: grid; place-items: center; padding: 0 5px; }
+  .mono { border: 2px solid var(--accent); }
+  .mono .head { display: flex; justify-content: space-between; align-items: baseline; padding: 12px 16px 2px; }
+  .mono .acts { display: flex; gap: 6px; padding: 0 16px 12px 64px; }
+  .mono .acts button { flex: 1; background: var(--sep); border-radius: 10px; padding: 8px 4px; font-size: 13px; font-weight: 600; }
+  .mono .acts button.x { flex: 0 0 44px; }
+  .mono .row + .acts { margin-top: -6px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .chips span { background: var(--card); border-radius: 16px; padding: 6px 6px 6px 12px; font-size: 14px; display: inline-flex; align-items: center; gap: 4px; }
+  .chips button { color: var(--hint); padding: 0 6px; font-size: 16px; }
+  .steps { margin: 0 0 14px; padding-left: 20px; }
+  .steps li { margin-bottom: 6px; }
   #toast { position: fixed; left: 50%; top: calc(12px + env(safe-area-inset-top)); transform: translate(-50%, -20px); background: rgba(30,30,35,.92); color: #fff;
     padding: 10px 16px; border-radius: 20px; font-size: 14px; opacity: 0; transition: all .25s; z-index: 40; pointer-events: none; max-width: 86vw; text-align: center; }
   #toast.on { opacity: 1; transform: translate(-50%, 0); }
@@ -173,7 +187,7 @@
 <script>
 /* ===================== НАЛАШТУВАННЯ ===================== */
 // Вставте сюди URL розгортання Apps Script (той самий, що WEBAPP_URL, закінчується на /exec)
-const API_URL = 'https://vageru.github.io/nash-dim/';
+const API_URL = 'https://script.google.com/macros/s/AKfycbxvh_6TuXciVZGEDBpVUwWO4AERV1qrk2O-IHMkKiOR9QBtCgNWVK18ecrCe2IemYdwKw/exec';
 
 /* ===================== ОСНОВА ===================== */
 const tg = window.Telegram && window.Telegram.WebApp;
@@ -314,6 +328,9 @@ $('#viewer').onclick = closeViewer;
 /* ===================== ВІДОБРАЖЕННЯ ===================== */
 function render() {
   $$('nav.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+  const pend = S.money.mono ? S.money.mono.pending.length : 0;
+  const mb = $('nav.tabs [data-tab=money]'); let bd = $('.badge', mb);
+  if (pend) { if (!bd) { bd = document.createElement('i'); bd.className = 'badge'; mb.appendChild(bd); } bd.textContent = pend; } else if (bd) bd.remove();
   const v = $('#view');
   const demo = DEMO ? '<div class="demo">Демоверсія: дані тестові й нікуди не зберігаються</div>' : '';
   v.innerHTML = demo + (tab === 'lists' ? viewLists() : tab === 'cal' ? viewCal() : viewMoney());
@@ -391,7 +408,24 @@ function viewMoney() {
         <div class="sub">${esc(human(e.date))} · ${esc(e.who)}</div></div>
       <div class="right">${money(e.amount)}</div>
     </div>`).join('');
+  const mono = m.mono || { connected: false, pending: [] };
+  const pending = mono.pending.map(p => `
+    <div class="row tap" data-mono="${esc(p.txid)}">
+      <div class="icon">${p.icon}</div>
+      <div class="main"><div class="title">${esc(p.desc)}</div><div class="sub">${esc(p.category)} · ${esc(human(p.date))}</div></div>
+      <div class="right"><b>${money(p.amount)}</b></div>
+    </div>
+    <div class="acts">
+      <button data-md="s:${esc(p.txid)}">👥 Спільна</button><button data-md="p:${esc(p.txid)}">🔒 Особиста</button><button class="x" data-md="x:${esc(p.txid)}" aria-label="Видалити">🙈</button>
+    </div>`).join('');
+  const monoBlock = mono.pending.length ? `
+    <div class="card mono" style="margin-bottom:10px">
+      <div class="head"><b>🏦 Нові з monobank</b><span class="hint small">бачите тільки ви</span></div>
+      <p class="hint small" style="margin:2px 16px 4px">Оберіть, куди записати. Без вибору зникнуть самі через ${mono.ttl} год</p>
+      ${pending}
+    </div>` : '';
   return `
+    ${monoBlock}
     <div class="card balance">${bal}</div>
     <div class="card pad" style="margin-top:10px">
       <div class="hint small">${esc(m.monthName[0].toUpperCase() + m.monthName.slice(1))}</div>
@@ -403,6 +437,10 @@ function viewMoney() {
     <div class="card">${pays || `<div class="empty">Комуналка, інтернет, оренда, підписки – додайте, і я нагадаю за 3 дні</div>`}</div>
     <h2>Витрати цього місяця</h2>
     <div class="card">${exps || `<div class="empty">Поки порожньо</div>`}</div>
+    <h2>Автоматично з картки</h2>
+    <div class="card"><div class="row tap" data-open="mono"><div class="icon">🏦</div>
+      <div class="main"><div class="title">monobank</div><div class="sub">${mono.connected ? 'Підключено · ' + esc(mono.cards.join(', ')) : 'Покупки з картки приходитимуть самі'}</div></div>
+      <div class="right link">${mono.connected ? 'Налаштувати' : 'Підключити'}</div></div></div>
     <button class="fab" data-open="expAdd">+ Додати</button>`;
 }
 
@@ -438,9 +476,16 @@ function bindView() {
   $$('[data-cal]').forEach(b => b.onclick = () => { const [t, id] = b.dataset.cal.split(':'); sheetCal(t, id); });
   $$('[data-pay]').forEach(b => b.onclick = () => sheetPay(b.dataset.pay));
   $$('[data-exp]').forEach(b => b.onclick = () => sheetExp(b.dataset.exp));
-  $$('[data-open]').forEach(b => b.onclick = () => ({ calAdd: sheetCalAdd, expAdd: () => sheetExpAdd('once'), settle: sheetSettle })[b.dataset.open]());
+  $$('[data-mono]').forEach(b => b.onclick = () => sheetMono(b.dataset.mono));
+  $$('[data-md]').forEach(b => b.onclick = () => { const [kind, txid] = b.dataset.md.split(/:(.*)/s); b.disabled = true; api('mono_decide', { txid, kind }).then(() => { b.disabled = false; }); });
+  $$('[data-open]').forEach(b => b.onclick = () => ({ calAdd: sheetCalAdd, expAdd: () => sheetExpAdd('once'), settle: sheetSettle, mono: sheetMonoSettings })[b.dataset.open]());
 }
-$$('nav.tabs button').forEach(b => b.onclick = () => { tab = b.dataset.tab; window.scrollTo(0, 0); render(); });
+let lastSync = Date.now();
+$$('nav.tabs button').forEach(b => b.onclick = () => {
+  tab = b.dataset.tab; window.scrollTo(0, 0); render();
+  if (tab === 'money' && Date.now() - lastSync > 30000) { lastSync = Date.now(); api('state'); } // підтягнути нові покупки з mono
+});
+if (tg && tg.onEvent) tg.onEvent('activated', () => { lastSync = Date.now(); api('state'); });
 
 /* ===================== ШТОРКИ ===================== */
 function openSheet(html, bind) {
@@ -618,6 +663,63 @@ function sheetExp(id) {
     $('#del', r).onclick = ev => submit(ev.target, 'exp_delete', { id });
   });
 }
+function sheetMono(txid) {
+  const p = S.money.mono.pending.find(x => x.txid === txid); if (!p) return;
+  openSheet(`
+    <div class="info" style="text-align:center"><div class="hint small">🏦 monobank · ${esc(human(p.date))}</div>
+      <div class="big" style="font-size:28px">${money(p.amount)}</div><div class="hint">${esc(p.desc)}</div></div>
+    <div class="field"><label>Категорія</label>${cats(p.category)}</div>
+    <button class="btn primary" data-k="s">👥 Спільна – поділити навпіл</button>
+    <button class="btn light" data-k="p">🔒 Особиста – бачу тільки я</button>
+    <button class="btn light" data-k="a">👥 Завжди спільна: «${esc(p.desc)}»</button>
+    <button class="btn danger" data-k="x">🙈 Не записувати</button>`, r => {
+    bindCats(r);
+    $$('[data-k]', r).forEach(b => b.onclick = e => submit(e.target, 'mono_decide', { txid, kind: b.dataset.k, category: catVal(r) }));
+  });
+}
+function sheetMonoSettings() {
+  const mono = S.money.mono;
+  if (!mono.connected) {
+    openSheet(`
+      <h3>🏦 Підключити monobank</h3>
+      <p class="hint" style="margin-top:0">Нові покупки з вашої картки самі з'являтимуться тут, і ви вирішуватимете: спільна, особиста чи не записувати. Бачите їх тільки ви</p>
+      <ol class="steps">
+        <li>Відкрийте api.monobank.ua (зручніше з комп'ютера)</li>
+        <li>Відскануйте QR у застосунку monobank і підтвердіть</li>
+        <li>Скопіюйте токен і вставте нижче</li>
+      </ol>
+      <button class="btn light" id="openMono">🔗 Відкрити api.monobank.ua</button>
+      <div class="field" style="margin-top:14px"><label>Токен</label><input id="token" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Вставте токен"></div>
+      <button class="btn primary" id="connect">Підключити</button>
+      <p class="hint small">Токен дає доступ лише на читання: переказати гроші через нього неможливо. Відкликати можна будь-коли на api.monobank.ua</p>`, r => {
+      $('#openMono', r).onclick = () => { const u = 'https://api.monobank.ua/'; if (tg && tg.openLink && !DEMO) tg.openLink(u); else window.open(u, '_blank'); };
+      $('#connect', r).onclick = e => submit(e.target, 'mono_connect', { token: $('#token', r).value.trim() });
+    });
+    return;
+  }
+  let auto = mono.auto.slice();
+  const chips = () => auto.length ? auto.map((w, i) => `<span>${esc(w)}<button data-rm="${i}" aria-label="Прибрати">✕</button></span>`).join('') : '<span class="hint small" style="background:none;padding:0">Поки немає</span>';
+  openSheet(`
+    <h3>🏦 monobank</h3>
+    <div class="info"><div class="hint small">Підключено</div><div class="big">${esc(mono.cards.join(', '))}</div></div>
+    <div class="field"><label>Нерозібрані покупки зникають через</label>${seg('ttl', [1, 2, 3, 4].map(h => [String(h), h + ' год']), String(mono.ttl))}</div>
+    <div class="field"><label>Завжди спільні (одразу записуються навпіл)</label>
+      <div class="chips" id="chips">${chips()}</div>
+      <form class="add" id="addAuto" style="margin:0"><input id="autoW" placeholder="Напр. АТБ, Сільпо, Glovo" autocomplete="off"><button type="submit">+</button></form></div>
+    <button class="btn primary" id="save">Зберегти</button>
+    <button class="btn danger" id="off">Відключити monobank</button>`, r => {
+    bindSegs(r);
+    const draw = () => { $('#chips', r).innerHTML = chips(); $$('[data-rm]', r).forEach(b => b.onclick = () => { auto.splice(Number(b.dataset.rm), 1); draw(); }); };
+    draw();
+    $('#addAuto', r).onsubmit = ev => {
+      ev.preventDefault();
+      $('#autoW', r).value.split(',').map(w => w.trim().toLowerCase()).filter(Boolean).forEach(w => { if (auto.indexOf(w) < 0) auto.push(w); });
+      $('#autoW', r).value = ''; draw();
+    };
+    $('#save', r).onclick = e => submit(e.target, 'mono_settings', { ttl: Number(segVal(r, 'ttl')), auto });
+    $('#off', r).onclick = e => askConfirm('Відключити monobank? Нові покупки перестануть приходити', () => submit(e.target, 'mono_disconnect', {}));
+  });
+}
 function sheetSettle() {
   const b = S.money.balance; if (!b) return;
   openSheet(`
@@ -657,6 +759,10 @@ function demoState() {
         { id: 'p2', title: 'Комуналка', day: 25, amount: null, who: '', whoName: '', category: 'комуналка', paid: false, left: 6 },
         { id: 'p3', title: 'Оренда', day: 20, amount: 18000, who: 'me', whoName: 'Валік', category: 'комуналка', paid: true, left: 0 },
       ],
+      mono: { connected: true, cards: ['чорна ·1234'], ttl: 3, auto: ['сільпо'], pending: [
+        { txid: 't1', amount: 189, desc: 'Кав\'ярня Lviv Croissants', category: 'кафе', icon: '☕', date: today, left: 160 },
+        { txid: 't2', amount: 1240, desc: 'Rozetka', category: 'дім', icon: '🏠', date: today, left: 95 },
+      ] },
       expenses: [
         { id: 'x1', date: today, amount: 450, category: 'продукти', icon: '🛒', note: 'АТБ', who: 'Валік', personal: false, mine: true },
         { id: 'x2', date: today, amount: 200, category: 'подарунки', icon: '🎁', note: 'сюрприз', who: 'Валік', personal: true, mine: true },
@@ -713,6 +819,19 @@ function demoApi(a, d) {
       return { ok: true, msg: 'Платіж додано', state: D };
     case 'pay_paid': D.money.payments.find(p => p.id === d.id).paid = true; return { ok: true, msg: 'Оплачено', state: D };
     case 'pay_unpaid': D.money.payments.find(p => p.id === d.id).paid = false; return { ok: true, msg: 'Позначку знято', state: D };
+    case 'mono_decide': {
+      const p = D.money.mono.pending.find(x => x.txid === d.txid); if (!p) return err('Час на вибір минув');
+      D.money.mono.pending = D.money.mono.pending.filter(x => x !== p);
+      if (d.kind === 'x') return { ok: true, msg: 'Видалено 🙈', state: D };
+      if (d.kind === 'a' && D.money.mono.auto.indexOf(p.desc.toLowerCase()) < 0) D.money.mono.auto.push(p.desc.toLowerCase());
+      const cat = d.category || p.category;
+      D.money.expenses.unshift({ id: uid(), date: p.date, amount: p.amount, category: cat, icon: catIcon(cat), note: p.desc, who: D.me.name, personal: d.kind === 'p', mine: true });
+      D.money.total += p.amount; if (d.kind === 'p') D.money.personal += p.amount;
+      return { ok: true, msg: d.kind === 'p' ? 'Записано як особисту 🔒' : 'Записано як спільну 👥', state: D };
+    }
+    case 'mono_connect': if ((d.token || '').length < 20) return err('Вставте токен повністю'); D.money.mono.connected = true; return { ok: true, msg: 'monobank підключено', state: D };
+    case 'mono_settings': D.money.mono.ttl = d.ttl; D.money.mono.auto = d.auto; return { ok: true, msg: 'Збережено', state: D };
+    case 'mono_disconnect': D.money.mono = { connected: false, cards: [], ttl: 3, auto: [], pending: [] }; return { ok: true, msg: 'monobank відключено', state: D };
     case 'pay_delete': D.money.payments = D.money.payments.filter(p => p.id !== d.id); return { ok: true, msg: 'Видалено', state: D };
   }
   return err('Невідома дія');
