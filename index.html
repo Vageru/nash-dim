@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Наш дім</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  /* ⚙️ Кольори беруться з теми Telegram; запасні значення – для перегляду в браузері */
+  :root {
+    --bg: var(--tg-theme-secondary-bg-color, #f1f1f4);
+    --card: var(--tg-theme-section-bg-color, var(--tg-theme-bg-color, #ffffff));
+    --text: var(--tg-theme-text-color, #111114);
+    --hint: var(--tg-theme-hint-color, #8a8a93);
+    --accent: var(--tg-theme-button-color, #2f7bf6);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    --link: var(--tg-theme-link-color, #2f7bf6);
+    --danger: var(--tg-theme-destructive-text-color, #e5484d);
+    --sep: rgba(127, 127, 140, .18);
+    --ok: #2fa86b;
+    --warn: #e0912c;
+    --radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: var(--tg-theme-secondary-bg-color, #101014);
+      --card: var(--tg-theme-section-bg-color, var(--tg-theme-bg-color, #1c1c22));
+      --text: var(--tg-theme-text-color, #f2f2f5);
+      --hint: var(--tg-theme-hint-color, #8d8d99);
+    }
+  }
+  /* перегляд поза Telegram: тема, яку задає сторінка-переглядач */
+  :root[data-theme=dark] { --bg: #101014; --card: #1c1c22; --text: #f2f2f5; --hint: #8d8d99; }
+  :root[data-theme=light] { --bg: #f1f1f4; --card: #ffffff; --text: #111114; --hint: #8a8a93; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif; }
+  body { padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+  input, select, textarea { font: inherit; color: var(--text); }
+  [hidden] { display: none !important; }
+
+  #bar { position: fixed; top: 0; left: 0; height: 3px; width: 0; background: var(--accent); z-index: 50; transition: width .3s; }
+  #bar.on { width: 70%; transition: width 2s ease-out; }
+
+  main { padding: 12px 12px 84px; max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 24px; margin: 6px 4px 12px; display: flex; align-items: center; justify-content: space-between; }
+  h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .02em; color: var(--hint); margin: 20px 16px 6px; }
+  .card { background: var(--card); border-radius: var(--radius); overflow: hidden; }
+  .card + .card { margin-top: 10px; }
+  .pad { padding: 14px 16px; }
+  .hint { color: var(--hint); font-size: 14px; }
+  .small { font-size: 13px; }
+  .empty { text-align: center; padding: 28px 20px; color: var(--hint); }
+  .empty b { display: block; font-size: 32px; margin-bottom: 6px; }
+
+  /* перемикачі */
+  .seg { display: flex; background: var(--sep); border-radius: 11px; padding: 3px; gap: 3px; margin-bottom: 12px; }
+  .seg button { flex: 1; padding: 8px 6px; border-radius: 9px; font-size: 14px; font-weight: 500; color: var(--hint); white-space: nowrap; }
+  .seg button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+  .seg .cnt { font-size: 12px; opacity: .7; margin-left: 3px; }
+
+  /* рядки списків */
+  .row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; min-height: 52px; position: relative; }
+  .row + .row::before { content: ""; position: absolute; top: 0; left: 16px; right: 0; border-top: 1px solid var(--sep); }
+  .row .main { flex: 1; min-width: 0; }
+  .row .title { overflow-wrap: anywhere; }
+  .row .sub { color: var(--hint); font-size: 13px; margin-top: 2px; }
+  .row .right { text-align: right; white-space: nowrap; }
+  .tap { cursor: pointer; }
+  .tap:active { background: var(--sep); }
+  .check { width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--hint); flex: none; display: grid; place-items: center; font-size: 14px; color: #fff; }
+  .check.on { background: var(--ok); border-color: var(--ok); }
+  .done .title { text-decoration: line-through; color: var(--hint); }
+  .icon { width: 36px; height: 36px; border-radius: 10px; background: var(--sep); display: grid; place-items: center; font-size: 19px; flex: none; }
+
+  .add { display: flex; gap: 8px; margin-bottom: 12px; }
+  .add input { flex: 1; border: 0; background: var(--card); border-radius: 12px; padding: 13px 14px; outline: none; min-width: 0; }
+  .add button { background: var(--accent); color: var(--accent-text); border-radius: 12px; padding: 0 18px; font-size: 22px; font-weight: 600; }
+
+  .btn { display: block; width: 100%; padding: 14px; border-radius: 12px; font-weight: 600; text-align: center; }
+  .btn.primary { background: var(--accent); color: var(--accent-text); }
+  .btn.light { background: var(--sep); color: var(--text); }
+  .btn.ghost { color: var(--link); }
+  .btn.danger { color: var(--danger); }
+  .btn + .btn { margin-top: 8px; }
+  .btn:disabled { opacity: .5; }
+  .link { color: var(--link); font-size: 15px; font-weight: 500; }
+
+  .chip { display: inline-block; font-size: 12px; padding: 3px 8px; border-radius: 20px; background: var(--sep); color: var(--hint); }
+  .chip.ok { background: rgba(47,168,107,.15); color: var(--ok); }
+  .chip.warn { background: rgba(224,145,44,.15); color: var(--warn); }
+  .chip.bad { background: rgba(229,72,77,.14); color: var(--danger); }
+
+  .balance { text-align: center; padding: 18px 16px; }
+  .balance .who { font-size: 15px; color: var(--hint); }
+  .balance .sum { font-size: 32px; font-weight: 700; margin: 4px 0 12px; }
+  .bars .b { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 14px; }
+  .bars .track { flex: 1; height: 6px; border-radius: 3px; background: var(--sep); overflow: hidden; }
+  .bars .fill { height: 100%; background: var(--accent); border-radius: 3px; }
+
+  .fab { position: fixed; right: 18px; bottom: calc(86px + env(safe-area-inset-bottom)); background: var(--accent); color: var(--accent-text);
+    border-radius: 28px; padding: 14px 20px; font-weight: 600; box-shadow: 0 6px 18px rgba(0,0,0,.22); z-index: 5; }
+
+  nav.tabs { position: fixed; left: 0; right: 0; bottom: 0; display: flex; background: var(--card); border-top: 1px solid var(--sep);
+    padding: 6px 6px calc(6px + env(safe-area-inset-bottom)); z-index: 10; }
+  nav.tabs button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 0; font-size: 11px; color: var(--hint); }
+  nav.tabs button span { font-size: 22px; filter: grayscale(1); opacity: .7; }
+  nav.tabs button.on { color: var(--accent); }
+  nav.tabs button.on span { filter: none; opacity: 1; }
+
+  /* нижня шторка */
+  #backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 20; opacity: 0; pointer-events: none; transition: opacity .2s; }
+  #backdrop.on { opacity: 1; pointer-events: auto; }
+  #sheet { position: fixed; left: 0; right: 0; bottom: 0; max-height: 92vh; overflow-y: auto; background: var(--bg); z-index: 21;
+    border-radius: 18px 18px 0 0; padding: 8px 16px calc(20px + env(safe-area-inset-bottom)); transform: translateY(105%); transition: transform .25s ease, visibility 0s .25s; visibility: hidden; }
+  #sheet.on { transform: none; visibility: visible; transition: transform .25s ease; }
+  #sheet .grab { width: 38px; height: 5px; border-radius: 3px; background: var(--sep); margin: 2px auto 10px; }
+  #sheet h3 { margin: 4px 0 14px; font-size: 20px; text-align: center; }
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 13px; color: var(--hint); margin: 0 4px 6px; }
+  .field input, .field select { width: 100%; border: 0; background: var(--card); border-radius: 12px; padding: 13px 14px; outline: none; -webkit-appearance: none; appearance: none; min-height: 48px; }
+  .field .note { font-size: 12px; color: var(--hint); margin: 5px 4px 0; }
+  .amount { display: flex; align-items: baseline; justify-content: center; gap: 6px; background: var(--card); border-radius: 14px; padding: 10px; }
+  .amount input { width: 100%; max-width: 220px; border: 0; background: none; font-size: 38px; font-weight: 700; text-align: right; outline: none; padding: 0; min-height: 0; }
+  .amount span { font-size: 22px; color: var(--hint); }
+  .cats { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
+  .cats button { background: var(--card); border-radius: 11px; padding: 9px 4px; font-size: 13px; border: 2px solid transparent; }
+  .cats button.on { border-color: var(--accent); }
+  .cats button b { display: block; font-size: 20px; font-weight: 400; }
+  .switch { display: flex; align-items: center; gap: 12px; background: var(--card); border-radius: 12px; padding: 12px 14px; cursor: pointer; }
+  .switch .t { flex: 1; }
+  .switch .t small { display: block; color: var(--hint); font-size: 12px; }
+  .switch i { width: 44px; height: 26px; border-radius: 13px; background: var(--sep); position: relative; flex: none; transition: background .2s; }
+  .switch i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: left .2s; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+  .switch.on i { background: var(--ok); }
+  .switch.on i::after { left: 21px; }
+  .info { background: var(--card); border-radius: 14px; padding: 14px 16px; margin-bottom: 14px; }
+  .info .big { font-size: 20px; font-weight: 600; overflow-wrap: anywhere; }
+
+  .thumb { width: 52px; height: 52px; border-radius: 10px; object-fit: cover; background: var(--sep); flex: none; display: grid; place-items: center; font-size: 20px; }
+  img.thumb { display: block; }
+  .add .cam { background: var(--card); color: var(--text); font-size: 20px; padding: 0 14px; }
+  .add .cam.on { background: var(--ok); color: #fff; }
+  .pending { display: flex; align-items: center; gap: 10px; background: var(--card); border-radius: 12px; padding: 8px; margin: -4px 0 12px; }
+  .pending img { width: 56px; height: 56px; border-radius: 8px; object-fit: cover; }
+  .pending .x { margin-left: auto; color: var(--danger); padding: 8px 12px; }
+  .preview { width: 100%; max-height: 46vh; object-fit: contain; border-radius: 14px; background: var(--card); display: block; margin-bottom: 12px; }
+  #viewer { position: fixed; inset: 0; background: rgba(0,0,0,.92); z-index: 30; display: none; align-items: center; justify-content: center; }
+  #viewer.on { display: flex; }
+  #viewer img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  #viewer .cap { position: absolute; left: 0; right: 0; bottom: calc(18px + env(safe-area-inset-bottom)); color: #fff; text-align: center; padding: 0 20px; font-size: 15px; }
+  #toast { position: fixed; left: 50%; top: calc(12px + env(safe-area-inset-top)); transform: translate(-50%, -20px); background: rgba(30,30,35,.92); color: #fff;
+    padding: 10px 16px; border-radius: 20px; font-size: 14px; opacity: 0; transition: all .25s; z-index: 40; pointer-events: none; max-width: 86vw; text-align: center; }
+  #toast.on { opacity: 1; transform: translate(-50%, 0); }
+  .demo { background: rgba(224,145,44,.15); color: var(--warn); font-size: 13px; text-align: center; padding: 8px; border-radius: 10px; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<div id="bar"></div>
+<main id="view"></main>
+<nav class="tabs">
+  <button data-tab="lists"><span>🛒</span>Покупки</button>
+  <button data-tab="cal"><span>📅</span>Календар</button>
+  <button data-tab="money"><span>💸</span>Гроші</button>
+</nav>
+<div id="backdrop"></div>
+<div id="sheet"></div>
+<div id="toast"></div>
+<div id="viewer"><img alt=""><div class="cap"></div></div>
+<input type="file" id="filePick" accept="image/*" hidden>
+
+<script>
+/* ===================== НАЛАШТУВАННЯ ===================== */
+// Вставте сюди URL розгортання Apps Script (той самий, що WEBAPP_URL, закінчується на /exec)
+const API_URL = 'PASTE_APPS_SCRIPT_EXEC_URL_HERE';
+
+/* ===================== ОСНОВА ===================== */
+const tg = window.Telegram && window.Telegram.WebApp;
+const DEMO = !tg || !tg.initData;
+let S = null;                 // стан із сервера
+let tab = 'lists', listTab = 'shop';
+let busy = false;
+
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const WD = ['нд', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+const MONTHS_GEN = ['січня', 'лютого', 'березня', 'квітня', 'травня', 'червня', 'липня', 'серпня', 'вересня', 'жовтня', 'листопада', 'грудня'];
+const pad = n => String(n).padStart(2, '0');
+const parseD = s => { const [y, m, d] = s.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d, 12)); };
+const fmtD = dt => dt.getUTCFullYear() + '-' + pad(dt.getUTCMonth() + 1) + '-' + pad(dt.getUTCDate());
+const addDays = (s, n) => { const d = parseD(s); d.setUTCDate(d.getUTCDate() + n); return fmtD(d); };
+const dayDiff = (a, b) => Math.round((parseD(a) - parseD(b)) / 864e5);
+function human(s) { const d = parseD(s); return WD[d.getUTCDay()] + ', ' + d.getUTCDate() + ' ' + MONTHS_GEN[d.getUTCMonth()]; }
+function rel(s) {
+  const diff = dayDiff(s, S.today);
+  if (diff === 0) return 'Сьогодні';
+  if (diff === 1) return 'Завтра';
+  return human(s)[0].toUpperCase() + human(s).slice(1);
+}
+function money(n) {
+  const r = Math.round(Number(n) * 100) / 100;
+  const [i, f] = (Math.abs(r) % 1 ? Math.abs(r).toFixed(2) : String(Math.abs(r))).split('.');
+  return (r < 0 ? '−' : '') + i.replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + (f ? ',' + f : '') + ' грн';
+}
+function haptic(type) { try { tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred(type); } catch (e) {} }
+function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('on'), 2200); }
+
+/* ===================== СЕРВЕР ===================== */
+async function api(action, data = {}) {
+  if (busy && action !== 'state') return false;
+  busy = true; $('#bar').classList.add('on');
+  try {
+    let res;
+    if (DEMO) { await new Promise(r => setTimeout(r, 250)); res = demoApi(action, data); }
+    else {
+      const r = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ api: 1, initData: tg.initData, action, data }) });
+      res = await r.json();
+    }
+    if (!res.ok) {
+      if (res.error === 'not_member') return fatal('Спершу приєднайтесь у боті', 'Напишіть боту /start і код доступу, потім відкрийте застосунок ще раз');
+      if (res.error === 'auth') return fatal('Не вдалося перевірити вхід', 'Закрийте й відкрийте застосунок ще раз з Telegram');
+      haptic('error'); toast(res.error); return false;
+    }
+    S = res.state;
+    if (res.msg && action !== 'state') { haptic('success'); toast(res.msg); }
+    render();
+    return true;
+  } catch (e) {
+    haptic('error'); toast('Немає зв\'язку з ботом, спробуйте ще раз'); return false;
+  } finally { busy = false; $('#bar').classList.remove('on'); }
+}
+function fatal(title, text) {
+  $('#view').innerHTML = `<div class="empty" style="padding-top:80px"><b>🔒</b><div style="font-size:18px;color:var(--text);font-weight:600">${esc(title)}</div><p>${esc(text)}</p></div>`;
+  $('nav.tabs').hidden = true; return false;
+}
+
+/* ===================== ФОТО ===================== */
+const THUMBS = {}, FULLS = {};
+let pendingPhoto = null; // фото, вибране для нового пункту (data:URI)
+
+/** Запит без «зайнятості» (для фото): не блокує інші дії */
+async function apiRaw(action, data) {
+  if (DEMO) return demoApi(action, data);
+  const r = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ api: 1, initData: tg.initData, action, data }) });
+  return r.json();
+}
+/** Зменшує фото до ~1280 px і стискає в JPEG, щоб швидко вантажилось */
+function shrink(file, max = 1280) {
+  return new Promise((resolve, reject) => {
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => {
+      const k = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      resolve(c.toDataURL('image/jpeg', 0.82));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Не вдалося прочитати фото')); };
+    img.src = url;
+  });
+}
+/** Відкриває вибір фото (камера або галерея) і повертає зменшене фото */
+function pickPhoto() {
+  return new Promise(resolve => {
+    const inp = $('#filePick');
+    inp.value = '';
+    inp.onchange = async () => {
+      const f = inp.files && inp.files[0];
+      if (!f) return resolve(null);
+      try { resolve(await shrink(f)); } catch (e) { toast(e.message); resolve(null); }
+    };
+    inp.click();
+  });
+}
+let thumbQueue = Promise.resolve();
+function loadThumbs() {
+  $$('[data-thumb]').forEach(el => {
+    const id = el.dataset.thumb;
+    if (THUMBS[id]) { setThumb(el, THUMBS[id]); return; }
+    thumbQueue = thumbQueue.then(async () => {
+      if (!THUMBS[id]) { try { const r = await apiRaw('photo_get', { id }); if (r.ok) THUMBS[id] = r.data; } catch (e) {} }
+      $$(`[data-thumb="${id}"]`).forEach(x => THUMBS[id] && setThumb(x, THUMBS[id]));
+    });
+  });
+}
+function setThumb(el, src) {
+  if (el.tagName === 'IMG') { el.src = src; return; }
+  const img = document.createElement('img'); img.className = 'thumb'; img.src = src; img.dataset.view = el.dataset.thumb; img.alt = '';
+  img.onclick = ev => { ev.stopPropagation(); viewPhoto(el.dataset.thumb); };
+  el.replaceWith(img);
+}
+async function viewPhoto(id) {
+  const it = S.items.find(i => i.id === id); if (!it) return;
+  const v = $('#viewer'), img = $('img', v);
+  img.src = FULLS[id] || THUMBS[id] || ''; $('.cap', v).textContent = it.text;
+  v.classList.add('on');
+  if (tg && tg.BackButton) { tg.BackButton.show(); tg.BackButton.onClick(closeViewer); }
+  if (!FULLS[id]) {
+    const r = await apiRaw('photo_get', { id, size: 'full' });
+    if (r.ok) { FULLS[id] = r.data; if (v.classList.contains('on')) img.src = r.data; }
+  }
+}
+function closeViewer() {
+  $('#viewer').classList.remove('on');
+  if (tg && tg.BackButton) { tg.BackButton.offClick(closeViewer); if (!$('#sheet').classList.contains('on')) tg.BackButton.hide(); }
+}
+$('#viewer').onclick = closeViewer;
+
+/* ===================== ВІДОБРАЖЕННЯ ===================== */
+function render() {
+  $$('nav.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+  const v = $('#view');
+  const demo = DEMO ? '<div class="demo">Демоверсія: дані тестові й нікуди не зберігаються</div>' : '';
+  v.innerHTML = demo + (tab === 'lists' ? viewLists() : tab === 'cal' ? viewCal() : viewMoney());
+  bindView();
+  loadThumbs();
+}
+
+const LIST_NAMES = { shop: ['🛒', 'Покупки', 'Що купити?'], plan: ['🏠', 'Для дому', 'Що треба для дому?'], wish: ['🎁', 'Бажання', 'Чого хочеться?'] };
+
+function viewLists() {
+  const cnt = l => S.items.filter(i => i.list === l && !i.done).length;
+  const items = S.items.filter(i => i.list === listTab);
+  const doneN = items.filter(i => i.done).length;
+  const seg = Object.keys(LIST_NAMES).map(l =>
+    `<button data-list="${l}" class="${l === listTab ? 'on' : ''}">${LIST_NAMES[l][0]} ${LIST_NAMES[l][1]}${cnt(l) ? `<span class="cnt">${cnt(l)}</span>` : ''}</button>`).join('');
+  const rows = items.map(i => `
+    <div class="row ${i.done ? 'done' : ''}">
+      <button class="check ${i.done ? 'on' : ''}" data-toggle="${i.id}" aria-label="Позначити">${i.done ? '✓' : ''}</button>
+      ${i.photo ? `<div class="thumb" data-thumb="${i.id}">📷</div>` : ''}
+      <div class="main tap" data-item="${i.id}">
+        <div class="title">${esc(i.text)}</div>
+        ${listTab !== 'shop' && i.author ? `<div class="sub">${esc(i.author)}</div>` : ''}
+      </div>
+    </div>`).join('');
+  return `
+    <div class="seg">${seg}</div>
+    <form class="add" id="addItem"><input id="itemText" placeholder="${pendingPhoto ? 'Як назвати?' : LIST_NAMES[listTab][2]}" autocomplete="off" enterkeyhint="done">${listTab !== 'shop' ? `<button type="button" class="cam ${pendingPhoto ? 'on' : ''}" id="addCam" aria-label="Додати фото">📷</button>` : ''}<button type="submit" aria-label="Додати">+</button></form>
+    ${pendingPhoto && listTab !== 'shop' ? `<div class="pending"><img src="${pendingPhoto}" alt=""><span class="hint small">Фото додасться до пункту</span><button class="x" id="dropPhoto">✕</button></div>` : ''}
+    <div class="card">${rows || `<div class="empty"><b>${LIST_NAMES[listTab][0]}</b>Поки порожньо. Напишіть вище й натисніть +</div>`}</div>
+    ${doneN ? `<button class="btn ghost" id="clearDone" style="margin-top:8px">Прибрати позначені (${doneN})</button>` : ''}
+    <p class="hint small" style="margin:12px 8px">Натисніть на кружечок, щоб позначити. Натисніть на назву, щоб змінити чи видалити</p>`;
+}
+
+function viewCal() {
+  let html = `<h1>Календар <button class="link" data-open="calAdd">+ Додати</button></h1>`;
+  if (!S.calendar.length) return html + `<div class="card"><div class="empty"><b>📅</b>Поки порожньо<br>Додайте вихідний чи подію – я нагадаю вам обом</div></div>`;
+  const groups = {};
+  S.calendar.forEach(c => (groups[c.date] = groups[c.date] || []).push(c));
+  Object.keys(groups).sort().forEach(d => {
+    const diff = dayDiff(d, S.today);
+    html += `<h2>${esc(rel(d))}${diff > 1 ? '' : ' · ' + esc(human(d))}</h2><div class="card">` + groups[d].map(c => c.type === 'off'
+      ? `<div class="row tap" data-cal="off:${c.id}"><div class="icon">🏖</div><div class="main"><div class="title">Вихідний: ${esc(c.who)}</div>${c.title ? `<div class="sub">${esc(c.title)}</div>` : ''}</div></div>`
+      : `<div class="row tap" data-cal="event:${c.id}"><div class="icon">🗓</div><div class="main"><div class="title">${esc(c.title)}</div><div class="sub">${c.time ? esc(c.time) + ' · ' : ''}додав(-ла) ${esc(c.who)}</div></div></div>`
+    ).join('') + `</div>`;
+  });
+  return html + `<p class="hint small" style="margin:14px 8px">Нагадую обом напередодні ввечері й зранку, а про події з часом – ще й за 2 години</p>`;
+}
+
+function payChip(p) {
+  if (p.paid) return '<span class="chip ok">оплачено</span>';
+  if (p.left < 0) return `<span class="chip bad">прострочено ${-p.left} дн</span>`;
+  if (p.left === 0) return '<span class="chip warn">сьогодні</span>';
+  if (p.left <= 3) return `<span class="chip warn">через ${p.left} дн</span>`;
+  return `<span class="chip">через ${p.left} дн</span>`;
+}
+
+function viewMoney() {
+  const m = S.money;
+  const bal = m.balance
+    ? `<div class="who">${esc(m.balance.from)} → ${esc(m.balance.to)}</div><div class="sum">${money(m.balance.amount)}</div>
+       <button class="btn light" data-open="settle">🤝 Розрахувались</button>`
+    : `<div class="sum" style="font-size:22px;margin:4px 0">Ви в розрахунку 👌</div><div class="who">Спільні витрати діляться навпіл</div>`;
+  const maxCat = m.byCat.length ? m.byCat[0].sum : 1;
+  const bars = m.byCat.slice(0, 5).map(c => `<div class="b"><span style="width:24px">${c.icon}</span><div class="track"><div class="fill" style="width:${Math.max(4, c.sum / maxCat * 100)}%"></div></div><span>${money(c.sum)}</span></div>`).join('');
+  const pays = m.payments.map(p => `
+    <div class="row tap" data-pay="${p.id}">
+      <div class="main"><div class="title">${esc(p.title)}</div>
+        <div class="sub">${p.day} числа${p.amount != null ? ' · ' + money(p.amount) : ''}${p.whoName ? ' · ' + esc(p.whoName) : ''}</div></div>
+      <div class="right">${payChip(p)}</div>
+    </div>`).join('');
+  const exps = m.expenses.map(e => `
+    <div class="row tap" data-exp="${e.id}">
+      <div class="icon">${e.icon}</div>
+      <div class="main"><div class="title">${esc(e.note || e.category)}${e.personal ? ' 🔒' : ''}</div>
+        <div class="sub">${esc(human(e.date))} · ${esc(e.who)}</div></div>
+      <div class="right">${money(e.amount)}</div>
+    </div>`).join('');
+  return `
+    <div class="card balance">${bal}</div>
+    <div class="card pad" style="margin-top:10px">
+      <div class="hint small">${esc(m.monthName[0].toUpperCase() + m.monthName.slice(1))}</div>
+      <div style="font-size:24px;font-weight:700">${money(m.total)}</div>
+      ${m.personal ? `<div class="hint small">з них ваші особисті 🔒 ${money(m.personal)}</div>` : ''}
+      ${bars ? `<div class="bars">${bars}</div>` : '<div class="hint small" style="margin-top:6px">Цього місяця витрат ще немає</div>'}
+    </div>
+    <h2>Постійні платежі</h2>
+    <div class="card">${pays || `<div class="empty">Комуналка, інтернет, оренда, підписки – додайте, і я нагадаю за 3 дні</div>`}</div>
+    <h2>Витрати цього місяця</h2>
+    <div class="card">${exps || `<div class="empty">Поки порожньо</div>`}</div>
+    <button class="fab" data-open="expAdd">+ Додати</button>`;
+}
+
+/* ===================== ПОДІЇ ===================== */
+function bindView() {
+  $$('[data-list]').forEach(b => b.onclick = () => { listTab = b.dataset.list; render(); });
+  $$('[data-view]').forEach(b => b.onclick = ev => { ev.stopPropagation(); viewPhoto(b.dataset.view); });
+  const f = $('#addItem');
+  if (f) f.onsubmit = async ev => {
+    ev.preventDefault();
+    const t = $('#itemText').value.trim();
+    const withPhoto = pendingPhoto && listTab !== 'shop';
+    if (!t) { if (withPhoto) toast('Напишіть, що це'); return; }
+    if (await api('item_add', withPhoto ? { list: listTab, text: t, photo: pendingPhoto } : { list: listTab, text: t })) {
+      if (withPhoto) { pendingPhoto = null; render(); }
+      setTimeout(() => $('#itemText') && $('#itemText').focus(), 50);
+    }
+  };
+  const cam = $('#addCam');
+  if (cam) cam.onclick = async () => {
+    const keep = $('#itemText').value;
+    const p = await pickPhoto();
+    if (p) { pendingPhoto = p; render(); $('#itemText').value = keep; $('#itemText').focus(); }
+  };
+  const dp = $('#dropPhoto'); if (dp) dp.onclick = () => { pendingPhoto = null; render(); };
+  $$('[data-toggle]').forEach(b => b.onclick = () => {
+    const it = S.items.find(i => i.id === b.dataset.toggle);
+    if (it) { it.done = !it.done; render(); try { tg && tg.HapticFeedback.selectionChanged(); } catch (e) {} }
+    api('item_toggle', { id: b.dataset.toggle });
+  });
+  $$('[data-item]').forEach(b => b.onclick = () => sheetItem(b.dataset.item));
+  const cd = $('#clearDone'); if (cd) cd.onclick = () => api('items_clear', { list: listTab });
+  $$('[data-cal]').forEach(b => b.onclick = () => { const [t, id] = b.dataset.cal.split(':'); sheetCal(t, id); });
+  $$('[data-pay]').forEach(b => b.onclick = () => sheetPay(b.dataset.pay));
+  $$('[data-exp]').forEach(b => b.onclick = () => sheetExp(b.dataset.exp));
+  $$('[data-open]').forEach(b => b.onclick = () => ({ calAdd: sheetCalAdd, expAdd: () => sheetExpAdd('once'), settle: sheetSettle })[b.dataset.open]());
+}
+$$('nav.tabs button').forEach(b => b.onclick = () => { tab = b.dataset.tab; window.scrollTo(0, 0); render(); });
+
+/* ===================== ШТОРКИ ===================== */
+function openSheet(html, bind) {
+  $('#sheet').innerHTML = '<div class="grab"></div>' + html;
+  $('#backdrop').classList.add('on'); $('#sheet').classList.add('on');
+  if (tg && tg.BackButton) { tg.BackButton.show(); tg.BackButton.onClick(closeSheet); }
+  bind && bind($('#sheet'));
+}
+function askConfirm(text, yes) {
+  if (DEMO) return yes(); // у демо без підтвердження
+  if (tg && tg.showConfirm) tg.showConfirm(text, ok => { if (ok) yes(); });
+  else if (window.confirm(text)) yes();
+}
+function closeSheet() {
+  $('#backdrop').classList.remove('on'); $('#sheet').classList.remove('on');
+  if (tg && tg.BackButton) { tg.BackButton.offClick(closeSheet); tg.BackButton.hide(); }
+  document.activeElement && document.activeElement.blur();
+}
+$('#backdrop').onclick = closeSheet;
+
+function seg(name, opts, val) {
+  return `<div class="seg" data-seg="${name}">` + opts.map(([v, t]) => `<button type="button" data-v="${v}" class="${v === val ? 'on' : ''}">${t}</button>`).join('') + `</div>`;
+}
+function segVal(root, name) { const b = root.querySelector(`[data-seg="${name}"] .on`); return b ? b.dataset.v : ''; }
+function bindSegs(root, onChange) {
+  $$('[data-seg] button', root).forEach(b => b.onclick = () => {
+    $$('button', b.parentNode).forEach(x => x.classList.toggle('on', x === b));
+    onChange && onChange(b.parentNode.dataset.seg, b.dataset.v);
+  });
+}
+function cats(selected) {
+  return `<div class="cats">` + S.cats.map(c => `<button type="button" data-cat="${esc(c.name)}" class="${c.name === selected ? 'on' : ''}"><b>${c.icon}</b>${esc(c.name)}</button>`).join('') + `</div>`;
+}
+function bindCats(root) { $$('[data-cat]', root).forEach(b => b.onclick = () => { $$('[data-cat]', root).forEach(x => x.classList.toggle('on', x === b)); }); }
+function catVal(root) { const b = root.querySelector('[data-cat].on'); return b ? b.dataset.cat : 'інше'; }
+const partnerName = () => S.partner ? S.partner.name : 'Партнер';
+async function submit(btn, action, data) {
+  btn.disabled = true;
+  const ok = await api(action, data);
+  btn.disabled = false;
+  if (ok) closeSheet();
+}
+
+/* --- пункт списку --- */
+function sheetItem(id) {
+  const it = S.items.find(i => i.id === id); if (!it) return;
+  openSheet(`
+    <h3>${LIST_NAMES[it.list][0]} Змінити</h3>
+    ${it.photo ? `<img class="preview" id="pv" src="${FULLS[id] || THUMBS[id] || ''}" alt="">` : ''}
+    <div class="field"><label>Назва</label><input id="t" value="${esc(it.text)}"></div>
+    <button class="btn primary" id="save">Зберегти</button>
+    <button class="btn light" id="photo">📷 ${it.photo ? 'Змінити фото' : 'Додати фото'}</button>
+    ${it.photo ? '<button class="btn ghost" id="nophoto">Прибрати фото</button>' : ''}
+    <button class="btn danger" id="del">Видалити</button>`, r => {
+    $('#save', r).onclick = e => submit(e.target, 'item_edit', { id, text: $('#t', r).value });
+    $('#del', r).onclick = e => submit(e.target, 'item_delete', { id });
+    $('#photo', r).onclick = async e => {
+      const p = await pickPhoto(); if (!p) return;
+      delete THUMBS[id]; delete FULLS[id];
+      submit(e.target, 'item_set_photo', { id, photo: p });
+    };
+    if (it.photo) {
+      $('#nophoto', r).onclick = e => { delete THUMBS[id]; delete FULLS[id]; submit(e.target, 'item_remove_photo', { id }); };
+      $('#pv', r).onclick = () => viewPhoto(id);
+      if (!FULLS[id]) apiRaw('photo_get', { id, size: 'full' }).then(x => { if (x.ok) { FULLS[id] = x.data; const pv = $('#pv'); if (pv) pv.src = x.data; } });
+    }
+  });
+}
+
+/* --- календар --- */
+function sheetCalAdd() {
+  openSheet(`
+    <h3>Додати в календар</h3>
+    ${seg('kind', [['event', '🗓 Подія'], ['off', '🏖 Вихідний']], 'event')}
+    <div id="fEvent">
+      <div class="field"><label>Що за подія</label><input id="evTitle" placeholder="Друзі в гостях, день народження мами…"></div>
+      <div class="field"><label>Дата</label><input type="date" id="evDate" value="${S.today}" min="${S.today}"></div>
+      <div class="field"><label>Час (необов'язково)</label><input type="time" id="evTime">
+        <div class="note">Якщо вказати час – нагадаю ще й за 2 години</div></div>
+    </div>
+    <div id="fOff" hidden>
+      <div class="field"><label>Чий вихідний</label>${seg('who', [['me', 'Мій'], ['partner', esc(partnerName())]], 'me')}</div>
+      <div class="field"><label>З якого дня</label><input type="date" id="offFrom" value="${S.today}" min="${S.today}"></div>
+      <div class="field"><label>По який день (якщо кілька)</label><input type="date" id="offTo" min="${S.today}">
+        <div class="note">Для одного дня залиште порожнім</div></div>
+      <div class="field"><label>Примітка (необов'язково)</label><input id="offNote" placeholder="Відпустка, поїздка, футбол…"></div>
+    </div>
+    <button class="btn primary" id="save">Зберегти</button>`, r => {
+    bindSegs(r, (name, v) => { if (name === 'kind') { $('#fEvent', r).hidden = v !== 'event'; $('#fOff', r).hidden = v !== 'off'; } });
+    $('#save', r).onclick = e => segVal(r, 'kind') === 'event'
+      ? submit(e.target, 'event_add', { title: $('#evTitle', r).value, date: $('#evDate', r).value, time: $('#evTime', r).value })
+      : submit(e.target, 'off_add', { who: segVal(r, 'who'), date: $('#offFrom', r).value, date_to: $('#offTo', r).value, note: $('#offNote', r).value });
+  });
+}
+function sheetCal(type, id) {
+  const c = S.calendar.find(x => x.type === type && x.id === id); if (!c) return;
+  openSheet(`
+    <div class="info"><div class="hint small">${esc(rel(c.date))}${dayDiff(c.date, S.today) > 1 ? '' : ' · ' + esc(human(c.date))}${c.time ? ' · ' + esc(c.time) : ''}</div>
+      <div class="big">${type === 'off' ? '🏖 Вихідний: ' + esc(c.who) : '🗓 ' + esc(c.title)}</div>
+      ${type === 'off' && c.title ? `<div class="hint">${esc(c.title)}</div>` : ''}
+      ${type === 'event' ? `<div class="hint small">додав(-ла) ${esc(c.who)}</div>` : ''}</div>
+    <button class="btn danger" id="del">Видалити</button>`, r => {
+    $('#del', r).onclick = e => submit(e.target, 'cal_delete', { type, id });
+  });
+}
+
+/* --- гроші --- */
+function sheetExpAdd(mode) {
+  openSheet(`
+    <h3>Нова витрата</h3>
+    ${seg('type', [['once', 'Разова'], ['regular', 'Постійна (щомісяця)']], mode)}
+    <div id="fOnce" ${mode === 'once' ? '' : 'hidden'}>
+      <div class="field"><div class="amount"><input id="exAmount" inputmode="decimal" placeholder="0"><span>грн</span></div></div>
+      <div class="field"><label>Категорія</label>${cats('продукти')}</div>
+      <div class="field"><label>Опис (необов'язково)</label><input id="exNote" placeholder="АТБ, таксі додому…"></div>
+      <div class="field"><label>Дата</label><input type="date" id="exDate" value="${S.today}" max="${S.today}"></div>
+      <div class="field" id="payerBox"><label>Хто платив</label>${seg('payer', [['me', 'Я'], ['partner', esc(partnerName())]], 'me')}</div>
+      <div class="field"><div class="switch" id="exPersonal"><div class="t">🔒 Особиста<small>Бачите тільки ви, не ділиться навпіл</small></div><i></i></div></div>
+    </div>
+    <div id="fRegular" ${mode === 'regular' ? '' : 'hidden'}>
+      <div class="field"><label>Назва</label><input id="pTitle" placeholder="Інтернет, оренда, комуналка…"></div>
+      <div class="field"><label>Сума</label><input id="pAmount" inputmode="decimal" placeholder="Наприклад, 415">
+        <div class="note">Залиште порожнім, якщо щоразу різна – спитаю при оплаті</div></div>
+      <div class="field"><label>Щомісяця, якого числа</label><select id="pDay">${Array.from({ length: 31 }, (_, i) => `<option value="${i + 1}" ${i + 1 === Number(S.today.slice(8)) ? 'selected' : ''}>${i + 1} числа</option>`).join('')}</select></div>
+      <div class="field"><label>Категорія</label>${cats('комуналка')}</div>
+      <div class="field"><label>Хто зазвичай платить</label>${seg('who', [['me', 'Я'], ['partner', esc(partnerName())], ['', 'Будь-хто']], '')}</div>
+    </div>
+    <button class="btn primary" id="save">Зберегти</button>`, r => {
+    bindSegs(r, (name, v) => { if (name === 'type') { $('#fOnce', r).hidden = v !== 'once'; $('#fRegular', r).hidden = v !== 'regular'; } });
+    $$('.cats', r).forEach(bindCats);
+    const sw = $('#exPersonal', r);
+    sw.onclick = () => { sw.classList.toggle('on'); $('#payerBox', r).hidden = sw.classList.contains('on'); };
+    if (mode === 'once') setTimeout(() => $('#exAmount', r).focus(), 300);
+    $('#save', r).onclick = e => {
+      if (segVal(r, 'type') === 'once') {
+        submit(e.target, 'exp_add', { amount: $('#exAmount', r).value.replace(',', '.'), category: catVal($('#fOnce', r)), note: $('#exNote', r).value,
+          date: $('#exDate', r).value, payer: segVal(r, 'payer'), personal: sw.classList.contains('on') });
+      } else {
+        submit(e.target, 'pay_add', { title: $('#pTitle', r).value, amount: $('#pAmount', r).value.replace(',', '.').trim(), day: $('#pDay', r).value,
+          category: catVal($('#fRegular', r)), who: segVal(r, 'who') });
+      }
+    };
+  });
+}
+function sheetPay(id) {
+  const p = S.money.payments.find(x => x.id === id); if (!p) return;
+  const me = p.who === 'partner' ? 'partner' : 'me';
+  openSheet(`
+    <div class="info"><div class="big">🧾 ${esc(p.title)}</div>
+      <div class="hint">${p.day} числа${p.amount != null ? ' · ' + money(p.amount) : ''}${p.whoName ? ' · платить ' + esc(p.whoName) : ''}</div>
+      <div style="margin-top:8px">${payChip(p)}</div></div>
+    ${p.paid ? `
+      <button class="btn light" id="unpaid">↩️ Зняти позначку «оплачено»</button>` : `
+      <div class="field"><label>Скільки сплатили</label><div class="amount"><input id="paySum" inputmode="decimal" placeholder="0" value="${p.amount != null ? p.amount : ''}"><span>грн</span></div></div>
+      <div class="field"><label>Хто заплатив</label>${seg('payer', [['me', 'Я'], ['partner', esc(partnerName())]], me)}</div>
+      <button class="btn primary" id="paid">✅ Оплачено</button>
+      <p class="hint small" style="text-align:center">Сума запишеться у витрати й поділиться навпіл</p>`}
+    <button class="btn danger" id="del">Видалити платіж</button>`, r => {
+    bindSegs(r);
+    if (p.paid) $('#unpaid', r).onclick = e => submit(e.target, 'pay_unpaid', { id });
+    else $('#paid', r).onclick = e => submit(e.target, 'pay_paid', { id, amount: $('#paySum', r).value.replace(',', '.') || '0', payer: segVal(r, 'payer') });
+    $('#del', r).onclick = e => askConfirm('Видалити платіж «' + p.title + '»?', () => submit(e.target, 'pay_delete', { id }));
+  });
+}
+function sheetExp(id) {
+  const e = S.money.expenses.find(x => x.id === id); if (!e) return;
+  openSheet(`
+    <div class="info"><div class="hint small">${esc(human(e.date))} · ${esc(e.who)}</div>
+      <div class="big">${e.icon} ${money(e.amount)}</div>
+      <div class="hint">${esc(e.category)}${e.note ? ' · ' + esc(e.note) : ''}</div>
+      <div class="hint small" style="margin-top:6px">${e.personal ? '🔒 Особиста – бачите тільки ви' : '👥 Спільна – ділиться навпіл'}</div></div>
+    ${e.mine ? `<button class="btn light" id="kind">${e.personal ? '👥 Зробити спільною' : '🔒 Зробити особистою'}</button>` : ''}
+    <button class="btn danger" id="del">Видалити витрату</button>`, r => {
+    if (e.mine) $('#kind', r).onclick = ev => submit(ev.target, 'exp_personal', { id });
+    $('#del', r).onclick = ev => submit(ev.target, 'exp_delete', { id });
+  });
+}
+function sheetSettle() {
+  const b = S.money.balance; if (!b) return;
+  openSheet(`
+    <div class="info" style="text-align:center"><div class="hint">${esc(b.from)} віддає ${esc(b.to)}</div><div class="big" style="font-size:30px">${money(b.amount)}</div></div>
+    <p class="hint" style="text-align:center">Натисніть, коли гроші вже передали – баланс обнулиться</p>
+    <button class="btn primary" id="ok">🤝 Так, розрахувались</button>
+    <button class="btn ghost" id="no">Ще ні</button>`, r => {
+    $('#ok', r).onclick = e => submit(e.target, 'settle', {});
+    $('#no', r).onclick = closeSheet;
+  });
+}
+
+/* ===================== ДЕМОВЕРСІЯ ===================== */
+function demoState() {
+  const t = new Date(); const today = t.getFullYear() + '-' + pad(t.getMonth() + 1) + '-' + pad(t.getDate());
+  const CATS = [['продукти', '🛒'], ['кафе', '☕'], ['дім', '🏠'], ['комуналка', '💡'], ['транспорт', '🚕'], ['здоров\'я', '💊'], ['одяг', '👕'], ['розваги', '🎉'], ['подарунки', '🎁'], ['інше', '📦']];
+  return {
+    me: { id: '1', name: 'Валік' }, partner: { id: '2', name: 'Ксюша' }, today,
+    items: [
+      { id: 'i1', list: 'shop', text: 'Молоко', done: false, author: 'Ксюша' },
+      { id: 'i2', list: 'shop', text: 'Сільодка', done: false, author: 'Валік' },
+      { id: 'i3', list: 'shop', text: 'Туалетний папір', done: true, author: 'Ксюша' },
+      { id: 'i4', list: 'plan', text: 'Нова сковорідка', done: false, author: 'Ксюша' },
+      { id: 'i5', list: 'wish', text: 'Плед у вітальню', done: false, author: 'Ксюша', photo: true },
+    ],
+    calendar: [
+      { type: 'event', id: 'e1', date: today, time: '19:00', title: 'Кіно', who: 'Валік' },
+      { type: 'off', id: 'o1', date: addDays(today, 1), time: '', title: 'футбол', who: 'Валік', mine: true },
+      { type: 'event', id: 'e2', date: addDays(today, 9), time: '19:00', title: 'Друзі в гостях', who: 'Ксюша' },
+    ],
+    money: {
+      monthName: 'листопад 2026', total: 19865, shared: 19665, personal: 200,
+      byCat: [{ name: 'комуналка', icon: '💡', sum: 18415 }, { name: 'продукти', icon: '🛒', sum: 1250 }, { name: 'подарунки', icon: '🎁', sum: 200 }],
+      balance: { from: 'Ксюша', to: 'Валік', amount: 832.5, iOwe: false },
+      payments: [
+        { id: 'p1', title: 'Інтернет', day: 22, amount: 415, who: 'me', whoName: 'Валік', category: 'комуналка', paid: false, left: 3 },
+        { id: 'p2', title: 'Комуналка', day: 25, amount: null, who: '', whoName: '', category: 'комуналка', paid: false, left: 6 },
+        { id: 'p3', title: 'Оренда', day: 20, amount: 18000, who: 'me', whoName: 'Валік', category: 'комуналка', paid: true, left: 0 },
+      ],
+      expenses: [
+        { id: 'x1', date: today, amount: 450, category: 'продукти', icon: '🛒', note: 'АТБ', who: 'Валік', personal: false, mine: true },
+        { id: 'x2', date: today, amount: 200, category: 'подарунки', icon: '🎁', note: 'сюрприз', who: 'Валік', personal: true, mine: true },
+        { id: 'x3', date: addDays(today, -1), amount: 800, category: 'продукти', icon: '🛒', note: 'Сільпо', who: 'Ксюша', personal: false, mine: false },
+      ],
+    },
+    cats: CATS.map(([name, icon]) => ({ name, icon })),
+  };
+}
+let D = null;
+// намальований плед для демо (у справжньому застосунку тут ваші фото з Telegram)
+const DEMO_IMG = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300"><rect width="400" height="300" fill="#d9cfc4"/><rect x="60" y="70" width="280" height="170" rx="18" fill="#8a9aa8"/><g stroke="#c7d1da" stroke-width="10" opacity=".7"><path d="M60 120h280M60 170h280M60 220h280M110 70v170M170 70v170M230 70v170M290 70v170"/></g><path d="M300 240c20 0 34-10 40-26v26z" fill="#6f7f8c"/></svg>');
+function demoApi(a, d) {
+  if (!D) D = demoState();
+  const uid = () => 'd' + Math.random().toString(16).slice(2, 8);
+  const catIcon = n => (D.cats.find(c => c.name === n) || { icon: '📦' }).icon;
+  const err = m => ({ ok: false, error: m });
+  switch (a) {
+    case 'state': return { ok: true, state: D };
+    case 'item_add':
+      if (d.photo) { if (!d.text.trim()) return err('Напишіть назву'); D.items.push({ id: uid(), list: d.list, text: d.text.trim(), done: false, author: D.me.name, photo: true, _src: d.photo }); return { ok: true, msg: 'Додано з фото', state: D }; }
+      d.text.split(/[,\n]/).map(s => s.trim()).filter(Boolean).forEach(t => D.items.push({ id: uid(), list: d.list, text: t, done: false, author: D.me.name })); return { ok: true, msg: 'Додано', state: D };
+    case 'item_toggle': return { ok: true, state: D };
+    case 'item_edit': D.items.find(i => i.id === d.id).text = d.text; return { ok: true, msg: 'Збережено', state: D };
+    case 'item_delete': D.items = D.items.filter(i => i.id !== d.id); return { ok: true, msg: 'Видалено', state: D };
+    case 'items_clear': D.items = D.items.filter(i => !(i.list === d.list && i.done)); return { ok: true, msg: 'Прибрано', state: D };
+    case 'item_photo': return { ok: true, msg: 'Фото надіслано в чат з ботом', state: D };
+    case 'photo_get': { const it = D.items.find(i => i.id === d.id); return it ? { ok: true, data: it._src || DEMO_IMG } : err('Фото не знайдено'); }
+    case 'item_set_photo': { const it = D.items.find(i => i.id === d.id); it.photo = true; it._src = d.photo; return { ok: true, msg: 'Фото збережено', state: D }; }
+    case 'item_remove_photo': { const it = D.items.find(i => i.id === d.id); it.photo = false; delete it._src; return { ok: true, msg: 'Фото прибрано', state: D }; }
+    case 'event_add':
+      if (!d.title.trim()) return err('Напишіть, що за подія');
+      D.calendar.push({ type: 'event', id: uid(), date: d.date, time: d.time, title: d.title, who: D.me.name }); D.calendar.sort((x, y) => (x.date + (x.time || '99')) < (y.date + (y.time || '99')) ? -1 : 1);
+      return { ok: true, msg: 'Подію додано', state: D };
+    case 'off_add': {
+      const who = d.who === 'partner' ? D.partner.name : D.me.name;
+      for (let c = d.date, i = 0; c <= (d.date_to || d.date) && i < 62; c = addDays(c, 1), i++) D.calendar.push({ type: 'off', id: uid(), date: c, time: '', title: d.note, who });
+      D.calendar.sort((x, y) => x.date < y.date ? -1 : 1);
+      return { ok: true, msg: 'Вихідні додано', state: D };
+    }
+    case 'cal_delete': D.calendar = D.calendar.filter(c => c.id !== d.id); return { ok: true, msg: 'Видалено', state: D };
+    case 'exp_add': {
+      const amt = Number(d.amount); if (!(amt > 0)) return err('Вкажіть суму');
+      D.money.expenses.unshift({ id: uid(), date: d.date, amount: amt, category: d.category, icon: catIcon(d.category), note: d.note, who: d.personal || d.payer === 'me' ? D.me.name : D.partner.name, personal: d.personal, mine: d.personal || d.payer === 'me' });
+      D.money.total += amt; if (d.personal) D.money.personal += amt;
+      return { ok: true, msg: 'Витрату додано', state: D };
+    }
+    case 'exp_delete': D.money.expenses = D.money.expenses.filter(e => e.id !== d.id); return { ok: true, msg: 'Видалено', state: D };
+    case 'exp_personal': { const e = D.money.expenses.find(x => x.id === d.id); e.personal = !e.personal; return { ok: true, state: D }; }
+    case 'settle': D.money.balance = null; return { ok: true, msg: 'Записано', state: D };
+    case 'pay_add':
+      if (!d.title.trim()) return err('Напишіть назву');
+      D.money.payments.push({ id: uid(), title: d.title, day: Number(d.day), amount: d.amount ? Number(d.amount) : null, who: d.who, whoName: d.who === 'me' ? D.me.name : d.who === 'partner' ? D.partner.name : '', category: d.category, paid: false, left: 5 });
+      return { ok: true, msg: 'Платіж додано', state: D };
+    case 'pay_paid': D.money.payments.find(p => p.id === d.id).paid = true; return { ok: true, msg: 'Оплачено', state: D };
+    case 'pay_unpaid': D.money.payments.find(p => p.id === d.id).paid = false; return { ok: true, msg: 'Позначку знято', state: D };
+    case 'pay_delete': D.money.payments = D.money.payments.filter(p => p.id !== d.id); return { ok: true, msg: 'Видалено', state: D };
+  }
+  return err('Невідома дія');
+}
+
+/* ===================== СТАРТ ===================== */
+if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
+if (!DEMO && API_URL.indexOf('http') !== 0) fatal('Застосунок не налаштовано', 'Вставте URL Apps Script у змінну API_URL в index.html');
+else { $('#view').innerHTML = '<div class="empty" style="padding-top:80px">Завантаження…</div>'; api('state'); }
+</script>
+</body>
+</html>
