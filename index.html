@@ -178,6 +178,21 @@
   .split .seg { margin-bottom: 8px; }
   .split .calc { font-size: 13px; color: var(--hint); margin: 0 4px; }
   .sub .sh { color: var(--accent); }
+  .light { display: flex; align-items: center; gap: 14px; padding: 16px; }
+  .light .bulb { font-size: 34px; width: 52px; height: 52px; border-radius: 16px; display: grid; place-items: center; background: rgba(224,145,44,.15); flex: none; }
+  .light.off .bulb { background: var(--sep); }
+  .light .st { font-size: 19px; font-weight: 700; }
+  .light .nx { color: var(--hint); font-size: 14px; margin-top: 2px; }
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .tiles button { background: var(--card); border-radius: 16px; padding: 16px 14px; text-align: left; display: flex; flex-direction: column; gap: 6px; min-height: 92px; }
+  .tiles button b { font-size: 26px; font-weight: 400; }
+  .tiles button span { font-weight: 600; }
+  .tiles button small { color: var(--hint); font-size: 12px; }
+  .tiles button.soon { opacity: .55; }
+  .back { margin: 2px 4px 6px; display: inline-block; }
+  .pref { padding: 16px; font-size: 17px; }
+  .pref small { display: block; color: var(--hint); font-size: 12px; margin-top: 8px; }
+  .hello { color: var(--hint); font-size: 14px; margin: 4px 4px 10px; }
   .demo { background: rgba(224,145,44,.15); color: var(--warn); font-size: 13px; text-align: center; padding: 8px; border-radius: 10px; margin-bottom: 10px; }
 </style>
 </head>
@@ -185,9 +200,11 @@
 <div id="bar"></div>
 <main id="view"></main>
 <nav class="tabs">
+  <button data-tab="home"><span>🏠</span>Головна</button>
   <button data-tab="lists"><span>🛒</span>Покупки</button>
   <button data-tab="cal"><span>📅</span>Календар</button>
   <button data-tab="money"><span>💸</span>Гроші</button>
+  <button data-tab="more"><span>☰</span>Ще</button>
 </nav>
 <div id="backdrop"></div>
 <div id="sheet"></div>
@@ -206,7 +223,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 const DEMO = !tg || !tg.initData;
 let S = null;                 // те, що бачимо: стан сервера + ще не надіслані зміни
 let SERVER = null;            // останній стан, який прийшов із сервера
-let tab = 'lists', listTab = 'shop';
+let tab = 'home', listTab = 'shop', calTab = 'events', moreView = '', prefTab = 'partner', prefPick = -1;
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -254,6 +271,7 @@ function rebuild() {
   S = clone(SERVER);
   S.money.moves = S.money.moves || [];
   S.money.breakdown = S.money.breakdown || [];
+  ['chores', 'choreStats', 'prefs', 'notes'].forEach(k => { S[k] = S[k] || []; });
   Q.forEach(op => { try { LOCAL[op.action] && LOCAL[op.action](S, op.data); } catch (e) {} });
 }
 /** Додає зміну: одразу на екран, на сервер – пачкою */
@@ -374,6 +392,7 @@ function payLeft(st, day) {
   const dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
   return Math.min(day, dim) - d;
 }
+const SECRET_RE = /парол|password|pin|пін|код|wi-?fi|вайфай/i;
 const LOCAL = {
   item_add(st, d) { if (!st.items.some(i => i.id === d.id)) st.items.push({ id: d.id, list: d.list, text: d.text, done: false, author: myName(st) }); },
   item_set_done(st, d) { const i = st.items.find(x => x.id === d.id); if (i) i.done = !!d.done; },
@@ -460,6 +479,30 @@ const LOCAL = {
     addExp(st, { id: d.expId, date: p.date, amount: p.amount, category: cat, icon: catIcon(st, cat), note: p.desc, who: myName(st),
       personal, mine: true, share: personal ? null : shareFrom(p.amount, d.split, d.share) });
   },
+  chore_add(st, d) {
+    const every = Math.max(1, parseInt(d.every, 10) || 7);
+    st.chores = st.chores || [];
+    st.chores.push({ id: d.id, title: d.title.trim(), every, due: st.today, left: 0, assignee: d.who === 'partner' ? pName(st) : d.who === 'any' ? '' : myName(st),
+      mine: d.who === 'me' || !d.who, anyone: d.who === 'any', lastDone: '' });
+    st.chores.sort((a, b) => a.left - b.left);
+  },
+  chore_done(st, d) {
+    const c = (st.chores || []).find(x => x.id === d.id); if (!c) return;
+    c.lastDone = st.today; c.due = addDays(st.today, c.every); c.left = c.every;
+    c.assignee = st.partner ? pName(st) : myName(st); c.mine = !st.partner; c.anyone = false;
+    st.chores.sort((a, b) => a.left - b.left);
+    const me = (st.choreStats = st.choreStats || []).find(x => x.name === myName(st));
+    if (me) me.n++; else st.choreStats.push({ name: myName(st), n: 1 });
+  },
+  chore_delete(st, d) { st.chores = (st.chores || []).filter(c => c.id !== d.id); },
+  pref_add(st, d) { (st.prefs = st.prefs || []).push({ id: d.id, kind: d.kind === 'hate' ? 'hate' : 'love', text: d.text.trim(), mine: true, who: myName(st) }); },
+  pref_delete(st, d) { st.prefs = (st.prefs || []).filter(x => !(x.id === d.id && x.mine)); },
+  note_add(st, d) {
+    (st.notes = st.notes || []).push({ id: d.id, title: d.title.trim(), body: (d.body || '').trim(), author: myName(st), photo: false, secret: SECRET_RE.test(d.title) });
+    st.notes.sort((a, b) => a.title.localeCompare(b.title, 'uk'));
+  },
+  note_edit(st, d) { const n = (st.notes || []).find(x => x.id === d.id); if (n) { n.title = d.title.trim(); n.body = (d.body || '').trim(); n.secret = SECRET_RE.test(n.title); } },
+  note_delete(st, d) { st.notes = (st.notes || []).filter(n => n.id !== d.id); },
   mono_settings(st, d) { const m = st.money.mono; if (m) { m.ttl = d.ttl; m.auto = d.auto.slice(); } },
 };
 /* ---- перевірки ще на телефоні, щоб шторка закривалась одразу ---- */
@@ -470,6 +513,10 @@ function shareErr(amount, d) {
   return v < 0 || v > amount ? 'Сума має бути від 0 до ' + money(amount) : '';
 }
 const VALID = {
+  chore_add: (st, d) => d.title.trim() ? '' : 'Напишіть, що за справа',
+  pref_add: (st, d) => d.text.trim() ? '' : 'Напишіть, що саме',
+  note_add: (st, d) => d.title.trim() ? '' : 'Напишіть назву',
+  note_edit: (st, d) => d.title.trim() ? '' : 'Напишіть назву',
   item_edit: (st, d) => d.text.trim() ? '' : 'Назва порожня',
   event_add: (st, d) => !d.title.trim() ? 'Напишіть, що за подія' : !d.date ? 'Оберіть дату' : d.date < st.today ? 'Ця дата вже минула' : '',
   off_add: (st, d) => !d.date ? 'Оберіть дату' : d.date < st.today ? 'Ця дата вже минула' : d.date_to && d.date_to < d.date ? 'Кінець раніше за початок' : '',
@@ -570,7 +617,7 @@ function render() {
   const ae = document.activeElement, keepId = ae && v.contains(ae) && ae.id ? ae.id : '';
   const typed = $('#itemText') ? $('#itemText').value : '';
   const demo = DEMO ? '<div class="demo">Демоверсія: дані тестові й нікуди не зберігаються</div>' : '';
-  v.innerHTML = demo + (tab === 'lists' ? viewLists() : tab === 'cal' ? viewCal() : viewMoney());
+  v.innerHTML = demo + (tab === 'home' ? viewHome() : tab === 'lists' ? viewLists('shop') : tab === 'cal' ? viewCal() : tab === 'money' ? viewMoney() : viewMore());
   bindView();
   const it = $('#itemText');
   if (it && typed) { it.value = typed; grow(it); }
@@ -579,13 +626,19 @@ function render() {
 }
 function grow(t) { t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; }
 
-const LIST_NAMES = { shop: ['🛒', 'Покупки', 'Що купити?'], plan: ['🏠', 'Для дому', 'Що треба для дому?'], wish: ['🎁', 'Бажання', 'Чого хочеться?'] };
+const LIST_NAMES = { shop: ['🛒', 'Покупки', 'Що купити?'], plan: ['🏠', 'Для дому', 'Що треба для дому?'], wish: ['🎁', 'Бажання', 'Чого хочеться?'],
+  watch: ['🎬', 'Подивитись', 'Фільм чи серіал'], go: ['📍', 'Куди піти', 'Кафе, місце, поїздка'] };
+const LIST_GROUPS = { shop: ['shop', 'plan', 'wish'], fun: ['watch', 'go'] };
+const PHOTO_LISTS = ['plan', 'wish', 'watch', 'go'];
 
-function viewLists() {
+function viewLists(group) {
+  const keys = LIST_GROUPS[group];
+  if (keys.indexOf(listTab) < 0) listTab = keys[0];
   const cnt = l => S.items.filter(i => i.list === l && !i.done).length;
   const items = S.items.filter(i => i.list === listTab);
   const doneN = items.filter(i => i.done).length;
-  const seg = Object.keys(LIST_NAMES).map(l =>
+  const canPhoto = PHOTO_LISTS.indexOf(listTab) >= 0;
+  const seg = keys.map(l =>
     `<button data-list="${l}" class="${l === listTab ? 'on' : ''}">${LIST_NAMES[l][0]} ${LIST_NAMES[l][1]}${cnt(l) ? `<span class="cnt">${cnt(l)}</span>` : ''}</button>`).join('');
   const rows = items.map(i => `
     <div class="row ${i.done ? 'done' : ''}">
@@ -598,15 +651,22 @@ function viewLists() {
     </div>`).join('');
   return `
     <div class="seg">${seg}</div>
-    <form class="add" id="addItem"><textarea id="itemText" rows="1" placeholder="${pendingPhoto ? 'Як назвати?' : LIST_NAMES[listTab][2]}" autocomplete="off"></textarea>${listTab !== 'shop' ? `<button type="button" class="cam ${pendingPhoto ? 'on' : ''}" id="addCam" aria-label="Додати фото">📷</button>` : ''}<button type="submit" aria-label="Додати">+</button></form>
-    ${pendingPhoto && listTab !== 'shop' ? `<div class="pending"><img src="${pendingPhoto}" alt=""><span class="hint small">Фото додасться до пункту</span><button class="x" id="dropPhoto">✕</button></div>` : ''}
+    <form class="add" id="addItem"><textarea id="itemText" rows="1" placeholder="${pendingPhoto ? 'Як назвати?' : LIST_NAMES[listTab][2]}" autocomplete="off"></textarea>${canPhoto ? `<button type="button" class="cam ${pendingPhoto ? 'on' : ''}" id="addCam" aria-label="Додати фото">📷</button>` : ''}<button type="submit" aria-label="Додати">+</button></form>
+    ${pendingPhoto && canPhoto ? `<div class="pending"><img src="${pendingPhoto}" alt=""><span class="hint small">Фото додасться до пункту</span><button class="x" id="dropPhoto">✕</button></div>` : ''}
     <div class="card">${rows || `<div class="empty"><b>${LIST_NAMES[listTab][0]}</b>Поки порожньо. Напишіть вище й натисніть +</div>`}</div>
-    ${doneN ? `<button class="btn ghost" id="clearDone" style="margin-top:8px">Прибрати позначені (${doneN})</button>` : ''}
+    ${group === 'fun' && items.some(i => !i.done) ? `<button class="btn light" id="rnd" style="margin-top:10px">🎲 Обрати випадково</button>` : ''}
+    ${doneN ? `<button class="btn ghost" id="clearDone" style="margin-top:8px">Прибрати ${group === 'fun' ? (listTab === 'watch' ? 'переглянуте' : 'відвідане') : 'позначені'} (${doneN})</button>` : ''}
     <p class="hint small" style="margin:12px 8px">Кілька пунктів – кожен з нового рядка. Натисніть на кружечок, щоб позначити, на назву – щоб змінити чи видалити</p>`;
 }
 
 function viewCal() {
-  let html = `<h1>Календар <button class="link" data-open="calAdd">+ Додати</button></h1>`;
+  const due = (S.chores || []).filter(c => c.left <= 0).length;
+  const head = `<h1>Календар <button class="link" data-open="${calTab === 'chores' ? 'choreAdd' : 'calAdd'}">+ Додати</button></h1>
+    <div class="seg"><button data-caltab="events" class="${calTab === 'events' ? 'on' : ''}">🗓 Події</button><button data-caltab="chores" class="${calTab === 'chores' ? 'on' : ''}">🧹 Справи${due ? `<span class="cnt">${due}</span>` : ''}</button></div>`;
+  return head + (calTab === 'chores' ? viewChores() : viewEvents());
+}
+function viewEvents() {
+  let html = '';
   if (!S.calendar.length) return html + `<div class="card"><div class="empty"><b>📅</b>Поки порожньо<br>Додайте вихідний чи подію – я нагадаю вам обом</div></div>`;
   const groups = {};
   S.calendar.forEach(c => (groups[c.date] = groups[c.date] || []).push(c));
@@ -618,6 +678,240 @@ function viewCal() {
     ).join('') + `</div>`;
   });
   return html + `<p class="hint small" style="margin:14px 8px">Нагадую обом напередодні ввечері й зранку, а про події з часом – ще й за 2 години</p>`;
+}
+
+/* ---- справи ---- */
+function choreWhen(c) {
+  return c.left < 0 ? `<span class="chip bad">прострочено ${-c.left} дн</span>` : c.left === 0 ? '<span class="chip warn">сьогодні</span>'
+    : c.left === 1 ? '<span class="chip">завтра</span>' : `<span class="chip">через ${c.left} дн</span>`;
+}
+function everyText(n) { return n === 1 ? 'щодня' : n === 7 ? 'щотижня' : n === 14 ? 'раз на 2 тижні' : n === 30 ? 'щомісяця' : 'кожні ' + n + ' дн'; }
+function choreRow(c) {
+  return `<div class="row">
+      <button class="check" data-chore-done="${esc(c.id)}" aria-label="Зроблено"></button>
+      <div class="main tap" data-chore="${esc(c.id)}"><div class="title">${esc(c.title)}</div>
+        <div class="sub">${c.anyone ? 'будь-хто' : 'черга: ' + esc(c.mine ? 'ваша' : c.assignee)} · ${everyText(c.every)}</div></div>
+      <div class="right">${choreWhen(c)}</div></div>`;
+}
+function viewChores() {
+  const list = S.chores || [];
+  if (!list.length) return `<div class="card"><div class="empty"><b>🧹</b>Додайте домашні справи й як часто їх робити – застосунок чергуватиме вас і нагадуватиме зранку. Хто зробив, той наступного разу відпочиває 😉</div></div>`;
+  const stats = (S.choreStats || []).map(x => esc(x.name) + ' – ' + x.n).join(' · ');
+  return `<div class="card">${list.map(choreRow).join('')}</div>
+    <p class="hint small" style="margin:12px 8px">Натисніть на кружечок, коли зробили – черга перейде до іншого${stats ? '<br>За цей місяць: ' + stats : ''}</p>`;
+}
+function choreDone(id) {
+  const c = (S.chores || []).find(x => x.id === id); if (!c) return;
+  haptic('success'); enqueue('chore_done', { id }, 600); toast('Молодець! 💪 Наступного разу – ' + (S.partner ? partnerName() : 'знову ви'));
+}
+function sheetChore(id) {
+  const c = (S.chores || []).find(x => x.id === id); if (!c) return;
+  openSheet(`
+    <div class="info"><div class="big">🧹 ${esc(c.title)}</div>
+      <div class="hint">${everyText(c.every)} · ${c.anyone ? 'будь-хто' : 'черга: ' + esc(c.mine ? 'ваша' : c.assignee)}</div>
+      <div style="margin-top:8px">${choreWhen(c)}</div>
+      ${c.lastDone ? `<div class="hint small" style="margin-top:6px">Востаннє: ${esc(human(c.lastDone))}</div>` : ''}</div>
+    <button class="btn primary" id="done">✅ Зроблено</button>
+    <button class="btn danger" id="del">Видалити справу</button>`, r => {
+    $('#done', r).onclick = () => { closeSheet(); choreDone(id); };
+    $('#del', r).onclick = e => askConfirm('Видалити справу «' + c.title + '»?', () => submit(e.target, 'chore_delete', { id }, 'Видалено'));
+  });
+}
+function sheetChoreAdd() {
+  openSheet(`
+    <h3>Нова справа</h3>
+    <div class="field"><label>Що робити</label><input id="chTitle" placeholder="Винести сміття, помити підлогу…"></div>
+    <div class="field"><label>Як часто</label>${seg('every', [['1', 'Щодня'], ['2', 'Через день'], ['7', 'Щотижня'], ['30', 'Щомісяця'], ['x', 'Інше']], '7')}
+      <div id="evBox" hidden><input id="chEvery" inputmode="numeric" placeholder="Кожні скільки днів, напр. 14"></div></div>
+    <div class="field"><label>Хто перший</label>${seg('who', [['me', 'Я'], ['partner', esc(partnerName())], ['any', 'Будь-хто']], 'me')}
+      <div class="note">Далі черга чергується сама: хто зробив, той наступного разу відпочиває</div></div>
+    <button class="btn primary" id="save">Зберегти</button>`, r => {
+    bindSegs(r, (name, v) => { if (name === 'every') { $('#evBox', r).hidden = v !== 'x'; if (v === 'x') $('#chEvery', r).focus(); } });
+    setTimeout(() => $('#chTitle', r).focus(), 300);
+    $('#save', r).onclick = e => {
+      const ev = segVal(r, 'every'), every = ev === 'x' ? parseInt($('#chEvery', r).value, 10) : Number(ev);
+      if (!(every >= 1)) { toast('Вкажіть, кожні скільки днів'); return; }
+      submit(e.target, 'chore_add', { title: $('#chTitle', r).value, every, who: segVal(r, 'who') }, 'Справу додано');
+    };
+  });
+}
+
+/* ---- світло ---- */
+function kyivNow() {
+  const p = {};
+  new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Kiev', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    .formatToParts(new Date()).forEach(x => { p[x.type] = x.value; });
+  return { date: p.year + '-' + p.month + '-' + p.day, min: Number(p.hour) * 60 + Number(p.minute) };
+}
+const toMin = t => { const [h, m] = String(t).split(':').map(Number); return h * 60 + (m || 0); };
+const hhmm = m => pad(Math.floor(((m % 1440) + 1440) % 1440 / 60)) + ':' + pad(((m % 60) + 60) % 60);
+function inText(m) { const h = Math.floor(m / 60), mm = m % 60; return (h ? h + ' год ' : '') + (mm || !h ? mm + ' хв' : '').trim(); }
+function lightStatus() {
+  const L = S.light; if (!L) return null;
+  const now = kyivNow();
+  let t = now.min;
+  if (now.date === L.tomorrow) t += 1440; else if (now.date !== L.today) return { stale: true };
+  const ranges = [];
+  (L.todayList || []).forEach(o => { let a = toMin(o.start), b = toMin(o.end); if (b <= a) b += 1440; ranges.push([a, b]); });
+  (L.tomorrowList || []).forEach(o => { let a = toMin(o.start) + 1440, b = toMin(o.end) + 1440; if (b <= a) b += 1440; ranges.push([a, b]); });
+  ranges.sort((x, y) => x[0] - y[0]);
+  const merged = [];
+  ranges.forEach(r => { const l = merged[merged.length - 1]; if (l && r[0] <= l[1]) l[1] = Math.max(l[1], r[1]); else merged.push(r.slice()); });
+  const cur = merged.find(r => r[0] <= t && t < r[1]);
+  const next = merged.find(r => r[0] > t);
+  return { off: !!cur, cur, next, t, known: (L.todayList || []).length + (L.tomorrowList || []).length > 0 };
+}
+function lightCard() {
+  const L = S.light, st = lightStatus();
+  if (!L || !st || st.stale) return `<div class="card light" data-light><div class="bulb">💡</div><div><div class="st">Світло</div><div class="nx">Оновлюю графік…</div></div></div>`;
+  if (!L.group && !st.known) return `<div class="card light" data-light><div class="bulb">💡</div><div><div class="st">Графік світла</div><div class="nx">Вкажіть свою чергу в боті: /group 3.2</div></div></div>`;
+  const day = m => m >= 1440 ? (m >= 2880 ? 'післязавтра ' : 'завтра ') : '';
+  let nx;
+  if (st.off) nx = 'Увімкнуть о ' + day(st.cur[1]) + hhmm(st.cur[1]) + ' – через ' + inText(st.cur[1] - st.t);
+  else if (st.next) nx = 'Вимкнуть ' + (st.next[0] - st.t <= 180 ? 'через ' + inText(st.next[0] - st.t) + ' · ' : day(st.next[0]) + 'о ') + hhmm(st.next[0]) + '-' + hhmm(st.next[1]);
+  else nx = st.known ? 'Далі відключень у графіку немає' : 'Відключень у графіку немає';
+  return `<div class="card light ${st.off ? 'off' : ''} tap" data-light><div class="bulb">${st.off ? '🔌' : '💡'}</div>
+    <div><div class="st">${st.off ? 'Світла немає' : 'Світло є'}</div><div class="nx">${nx}</div></div></div>`;
+}
+function sheetLight() {
+  const L = S.light; if (!L) return;
+  const list = (arr) => arr && arr.length ? arr.map(o => `<div class="row"><div class="icon">🔌</div><div class="main"><div class="title">${esc(o.start)}-${esc(o.end)}</div></div></div>`).join('')
+    : '<div class="row"><div class="icon">💡</div><div class="main"><div class="title">Без відключень</div><div class="sub">або графік ще не оголосили</div></div></div>';
+  openSheet(`
+    <h3>💡 Графік світла${L.group ? ' · черга ' + esc(L.group) : ''}</h3>
+    <h2 style="margin-top:0">Сьогодні, ${esc(human(L.today))}</h2><div class="card">${list(L.todayList)}</div>
+    <h2>Завтра, ${esc(human(L.tomorrow))}</h2><div class="card">${list(L.tomorrowList)}</div>
+    <p class="hint small" style="margin:12px 4px">Нагадування приходять у бот обом. ${L.synced ? 'Графік перевірено о ' + esc(L.synced) + '. ' : ''}Дані з svitlo.live, звіряйте з сайтом ВОЕ</p>
+    <button class="btn ghost" id="close">Закрити</button>`, r => { $('#close', r).onclick = closeSheet; });
+}
+
+/* ---- головна ---- */
+function viewHome() {
+  const t = kyivNow();
+  const hello = (() => { const d = parseD(S.today); return WD_FULL[d.getUTCDay()] + ', ' + d.getUTCDate() + ' ' + MONTHS_GEN[d.getUTCMonth()]; })();
+  // найближче з календаря (до 7 днів)
+  const soon = S.calendar.filter(c => dayDiff(c.date, S.today) <= 7).slice(0, 3).map(c => `
+    <div class="row tap" data-cal="${c.type}:${esc(c.id)}"><div class="icon">${c.type === 'off' ? '🏖' : '🗓'}</div>
+      <div class="main"><div class="title">${c.type === 'off' ? 'Вихідний: ' + esc(c.who) : esc(c.title)}</div>
+      <div class="sub">${esc(rel(c.date))}${c.time ? ' · ' + esc(c.time) : ''}</div></div></div>`).join('');
+  const chores = (S.chores || []);
+  const dueCh = chores.filter(c => c.left <= 0);
+  const nextCh = chores.find(c => c.left > 0);
+  const choreHtml = dueCh.length ? dueCh.slice(0, 4).map(choreRow).join('') + (dueCh.length > 4 ? `<div class="row tap" data-goto="cal:chores"><div class="main hint">Ще ${dueCh.length - 4} ›</div></div>` : '')
+    : chores.length ? `<div class="row tap" data-goto="cal:chores"><div class="icon">🧹</div><div class="main"><div class="title">На сьогодні справ немає 👌</div>
+        ${nextCh ? `<div class="sub">Далі: ${esc(nextCh.title)} – ${nextCh.left === 1 ? 'завтра' : 'через ' + nextCh.left + ' дн'}</div>` : ''}</div></div>` : '';
+  // уподобання партнера
+  const pp = (S.prefs || []).filter(x => !x.mine);
+  let pref = '';
+  if (S.partner) {
+    if (pp.length) {
+      if (prefPick < 0) prefPick = Math.floor(Math.random() * pp.length);
+      const x = pp[prefPick % pp.length];
+      pref = `<h2>${esc(partnerName())} ${x.kind === 'hate' ? 'не любить' : 'любить'}</h2>
+        <div class="card pref tap" data-pref-next>${x.kind === 'hate' ? '👎' : '❤️'} ${esc(x.text)}${pp.length > 1 ? '<small>Натисніть, щоб побачити інше</small>' : ''}</div>`;
+    } else pref = `<h2>Уподобання</h2><div class="card pref tap" data-goto="more:prefs">❤️ Додайте, що любите – і ${esc(partnerName())} теж<small>Ще → Уподобання</small></div>`;
+  }
+  return `
+    <div class="hello">${esc(hello[0].toUpperCase() + hello.slice(1))}</div>
+    ${lightCard()}
+    <h2>Найближче</h2>
+    <div class="card">${soon || `<div class="row tap" data-goto="cal:events"><div class="icon">🗓</div><div class="main"><div class="title">Найближчим тижнем подій немає</div><div class="sub">Додати в календар ›</div></div></div>`}</div>
+    ${choreHtml ? `<h2>Справи</h2><div class="card">${choreHtml}</div>` : ''}
+    ${pref}`;
+}
+const WD_FULL = ['неділя', 'понеділок', 'вівторок', 'середа', 'четвер', 'пʼятниця', 'субота'];
+
+/* ---- ще ---- */
+const MORE = [
+  ['fun', '🎬', 'Дозвілля', 'Що подивитись і куди піти'],
+  ['notes', '📝', 'Нотатки', 'Wi-Fi, лічильники, контакти'],
+  ['prefs', '❤️', 'Уподобання', 'Хто що любить'],
+  ['', '🎯', 'Цілі', 'поки в боті', '🎯 Цілі'],
+  ['', '🍝', 'Рецепти', 'поки в боті', '🍝 Рецепти'],
+  ['', '😈', 'Чіт-меню', 'поки в боті', '😈 Чіт-меню'],
+];
+function viewMore() {
+  const back = '<button class="link back" data-more-open="">‹ Ще</button>';
+  if (moreView === 'fun') return back + viewLists('fun');
+  if (moreView === 'notes') return back + viewNotes();
+  if (moreView === 'prefs') return back + viewPrefs();
+  return `<h1>Ще</h1><div class="tiles">` + MORE.map(m => m[0]
+    ? `<button data-more-open="${m[0]}"><b>${m[1]}</b><span>${m[2]}</span><small>${m[3]}</small></button>`
+    : `<button class="soon" data-soon="${esc(m[4])}"><b>${m[1]}</b><span>${m[2]}</span><small>${m[3]}</small></button>`).join('') + `</div>`;
+}
+function sheetRandom() {
+  const pool = S.items.filter(i => i.list === listTab && !i.done); if (!pool.length) return;
+  const x = pool[Math.floor(Math.random() * pool.length)];
+  openSheet(`
+    <div class="info" style="text-align:center;padding:24px 16px"><div style="font-size:40px">🎲</div>
+      <div class="hint">${listTab === 'watch' ? 'Сьогодні дивимось' : 'Сьогодні йдемо'}</div><div class="big" style="font-size:24px;margin-top:4px">${esc(x.text)}</div></div>
+    ${x.photo ? `<img class="preview" id="rp" src="${FULLS[x.id] || THUMBS[x.id] || ''}" alt="">` : ''}
+    ${pool.length > 1 ? '<button class="btn light" id="again">🎲 Ще раз</button>' : ''}
+    <button class="btn primary" id="ok">${listTab === 'watch' ? '✓ Переглянули' : '✓ Сходили'}</button>
+    <button class="btn ghost" id="close">Закрити</button>`, r => {
+    if (pool.length > 1) $('#again', r).onclick = sheetRandom;
+    if (x.photo) {
+      $('#rp', r).onclick = () => viewPhoto(x.id);
+      if (!FULLS[x.id]) apiRaw('photo_get', { id: x.id, size: 'full' }).then(z => { if (z.ok) { FULLS[x.id] = z.data; const im = $('#rp'); if (im) im.src = z.data; } }).catch(() => {});
+    }
+    $('#ok', r).onclick = () => { enqueue('item_set_done', { id: x.id, done: true }); closeSheet(); };
+    $('#close', r).onclick = closeSheet;
+  });
+}
+function viewNotes() {
+  const list = S.notes || [];
+  const rows = list.map(n => `<div class="row tap" data-note="${esc(n.id)}"><div class="icon">${n.secret ? '🔑' : n.photo ? '📷' : '📝'}</div>
+    <div class="main"><div class="title">${esc(n.title)}</div><div class="sub">${n.secret && n.body ? '••••••' : esc((n.body || (n.photo ? 'фото – у боті' : '')).split('\n')[0].slice(0, 60))}</div></div></div>`).join('');
+  return `<h1>Нотатки <button class="link" data-open="noteAdd">+ Додати</button></h1>
+    <div class="card">${rows || `<div class="empty"><b>📝</b>Пароль від Wi-Fi, показники лічильників, номер договору, розміри, телефони майстрів – усе, що треба мати під рукою обом</div>`}</div>`;
+}
+function sheetNote(id) {
+  const n = (S.notes || []).find(x => x.id === id); if (!n) return;
+  openSheet(`
+    <div class="info"><div class="big">${n.secret ? '🔑' : '📝'} ${esc(n.title)}</div>
+      <div id="nb" style="margin-top:8px;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text">${n.secret && n.body ? '<button class="link" id="show">Показати</button>' : esc(n.body || (n.photo ? '📷 Фото можна подивитись у боті: «📝 Нотатки»' : 'Порожньо'))}</div>
+      <div class="hint small" style="margin-top:8px">додав(-ла) ${esc(n.author)}</div></div>
+    ${n.body ? '<button class="btn light" id="copy">📋 Скопіювати текст</button>' : ''}
+    <button class="btn light" id="edit">✏️ Змінити</button>
+    <button class="btn danger" id="del">Видалити</button>`, r => {
+    const sh = $('#show', r); if (sh) sh.onclick = () => { $('#nb', r).textContent = n.body; };
+    const cp = $('#copy', r); if (cp) cp.onclick = () => { try { navigator.clipboard.writeText(n.body).then(() => toast('Скопійовано'), () => toast('Не вдалося скопіювати')); } catch (e) { toast('Не вдалося скопіювати'); } };
+    $('#edit', r).onclick = () => sheetNoteEdit(id);
+    $('#del', r).onclick = e => askConfirm('Видалити нотатку «' + n.title + '»?', () => submit(e.target, 'note_delete', { id }, 'Видалено'));
+  });
+}
+function sheetNoteEdit(id) {
+  const n = id ? (S.notes || []).find(x => x.id === id) : null;
+  openSheet(`
+    <h3>${n ? 'Змінити нотатку' : 'Нова нотатка'}</h3>
+    <div class="field"><label>Назва</label><input id="nTitle" value="${n ? esc(n.title) : ''}" placeholder="Wi-Fi, лічильники, майстер…"></div>
+    <div class="field"><label>Текст</label><textarea id="nBody" rows="6" style="width:100%;border:0;background:var(--card);border-radius:12px;padding:13px 14px;outline:none;resize:vertical">${n ? esc(n.body) : ''}</textarea>
+      <div class="note">Якщо в назві є «пароль», «код» чи «Wi-Fi», текст буде прихований, доки не натиснете «Показати»</div></div>
+    <button class="btn primary" id="save">Зберегти</button>`, r => {
+    if (!n) setTimeout(() => $('#nTitle', r).focus(), 300);
+    $('#save', r).onclick = e => submit(e.target, n ? 'note_edit' : 'note_add', Object.assign(n ? { id } : {}, { title: $('#nTitle', r).value, body: $('#nBody', r).value }), n ? 'Збережено' : 'Нотатку додано');
+  });
+}
+function viewPrefs() {
+  const all = S.prefs || [];
+  if (!S.partner) prefTab = 'mine';
+  const list = all.filter(x => prefTab === 'mine' ? x.mine : !x.mine);
+  const block = (kind, title) => {
+    const xs = list.filter(x => x.kind === kind);
+    return xs.length ? `<h2>${title}</h2><div class="card">` + xs.map(x => `<div class="row ${x.mine ? 'tap' : ''}" ${x.mine ? `data-pref="${esc(x.id)}"` : ''}>
+      <div class="icon">${kind === 'hate' ? '👎' : '❤️'}</div><div class="main"><div class="title">${esc(x.text)}</div></div></div>`).join('') + `</div>` : '';
+  };
+  const body = block('love', prefTab === 'mine' ? 'Я люблю' : 'Любить') + block('hate', prefTab === 'mine' ? 'Я не люблю' : 'Не любить');
+  return `<h1>Уподобання</h1>
+    ${S.partner ? `<div class="seg"><button data-preftab="partner" class="${prefTab === 'partner' ? 'on' : ''}">${esc(partnerName())}</button><button data-preftab="mine" class="${prefTab === 'mine' ? 'on' : ''}">Мої</button></div>` : ''}
+    ${prefTab === 'mine' ? `<form class="add" id="addPref"><input id="prefText" placeholder="Кава, квіти, жанр кіно…" autocomplete="off"><button data-pk="love" aria-label="Люблю">❤️</button><button data-pk="hate" aria-label="Не люблю" style="background:var(--sep);color:var(--text)">👎</button></form>` : ''}
+    ${body || `<div class="card"><div class="empty"><b>❤️</b>${prefTab === 'mine' ? 'Напишіть, що любите чи не любите, і натисніть ❤️ або 👎' : esc(partnerName()) + ' поки нічого не додав(-ла)'}</div></div>`}
+    ${prefTab === 'mine' && list.length ? '<p class="hint small" style="margin:12px 8px">Натисніть на своє, щоб видалити</p>' : ''}`;
+}
+function sheetPref(id) {
+  const x = (S.prefs || []).find(p => p.id === id && p.mine); if (!x) return;
+  openSheet(`<div class="info"><div class="big">${x.kind === 'hate' ? '👎' : '❤️'} ${esc(x.text)}</div></div>
+    <button class="btn danger" id="del">Видалити</button>`, r => { $('#del', r).onclick = e => submit(e.target, 'pref_delete', { id }, 'Видалено'); });
 }
 
 function payChip(p) {
@@ -707,7 +1001,7 @@ function bindView() {
     f.onsubmit = async ev => {
       ev.preventDefault();
       const raw = ta.value;
-      const withPhoto = pendingPhoto && listTab !== 'shop';
+      const withPhoto = pendingPhoto && PHOTO_LISTS.indexOf(listTab) >= 0;
       if (withPhoto) {
         const t = raw.replace(/\s+/g, ' ').trim();
         if (!t) { toast('Напишіть, що це'); return; }
@@ -743,9 +1037,29 @@ function bindView() {
   $$('[data-mono]').forEach(b => b.onclick = () => sheetMono(b.dataset.mono));
   $$('[data-md]').forEach(b => b.onclick = () => { const [kind, txid] = b.dataset.md.split(/:(.*)/s); haptic('success'); enqueue('mono_decide', { txid, kind }, 600); });
   $$('[data-move]').forEach(b => b.onclick = () => sheetMove(b.dataset.move));
-  $$('[data-open]').forEach(b => b.onclick = () => ({ calAdd: sheetCalAdd, expAdd: () => sheetExpAdd('once'), settle: sheetSettle, mono: sheetMonoSettings, breakdown: sheetBreakdown })[b.dataset.open]());
+  $$('[data-caltab]').forEach(b => b.onclick = () => { calTab = b.dataset.caltab; render(); });
+  $$('[data-chore-done]').forEach(b => b.onclick = ev => { ev.stopPropagation(); choreDone(b.dataset.choreDone); });
+  $$('[data-chore]').forEach(b => b.onclick = () => sheetChore(b.dataset.chore));
+  $$('[data-goto]').forEach(b => b.onclick = () => { const [t, sub] = b.dataset.goto.split(':'); tab = t; if (t === 'cal') calTab = sub || 'events'; if (t === 'more') moreView = sub || ''; window.scrollTo(0, 0); render(); });
+  $$('[data-more-open]').forEach(b => b.onclick = () => { moreView = b.dataset.moreOpen; window.scrollTo(0, 0); render(); });
+  $$('[data-soon]').forEach(b => b.onclick = () => toast('Поки що в боті – кнопка «' + b.dataset.soon + '» у меню під полем вводу'));
+  $$('[data-pref-next]').forEach(b => b.onclick = () => { prefPick++; render(); });
+  $$('[data-preftab]').forEach(b => b.onclick = () => { prefTab = b.dataset.preftab; render(); });
+  $$('[data-pref]').forEach(b => b.onclick = () => sheetPref(b.dataset.pref));
+  const pf = $('#addPref');
+  if (pf) $$('[data-pk]', pf).forEach(b => b.onclick = ev => {
+    ev.preventDefault();
+    const t = $('#prefText').value.trim(); if (!t) { toast('Напишіть, що саме'); return; }
+    $('#prefText').value = '';
+    enqueue('pref_add', { kind: b.dataset.pk, text: t }, 600); haptic('success');
+  });
+  $$('[data-note]').forEach(b => b.onclick = () => sheetNote(b.dataset.note));
+  const rnd = $('#rnd'); if (rnd) rnd.onclick = sheetRandom;
+  $$('[data-light]').forEach(b => b.onclick = sheetLight);
+  $$('[data-open]').forEach(b => b.onclick = () => ({ calAdd: sheetCalAdd, expAdd: () => sheetExpAdd('once'), settle: sheetSettle, mono: sheetMonoSettings, breakdown: sheetBreakdown, choreAdd: sheetChoreAdd, noteAdd: () => sheetNoteEdit() })[b.dataset.open]());
 }
 $$('nav.tabs button').forEach(b => b.onclick = () => {
+  if (tab === b.dataset.tab && tab === 'more') moreView = '';
   tab = b.dataset.tab; window.scrollTo(0, 0); render();
   if (Date.now() - lastSync > 30000) refresh(); // підтягнути зміни партнера й нові покупки з mono
 });
@@ -756,6 +1070,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') refresh();
 });
 window.addEventListener('online', refresh);
+setInterval(() => { if (S && tab === 'home' && document.visibilityState === 'visible') render(); }, 60000);
 
 /* ===================== ШТОРКИ ===================== */
 function openSheet(html, bind) {
@@ -1152,6 +1467,9 @@ function demoState() {
       { id: 'i3', list: 'shop', text: 'Туалетний папір', done: true, author: 'Ксюша' },
       { id: 'i4', list: 'plan', text: 'Нова сковорідка', done: false, author: 'Ксюша' },
       { id: 'i5', list: 'wish', text: 'Плед у вітальню', done: false, author: 'Ксюша', photo: true },
+      { id: 'w1', list: 'watch', text: 'Дюна: частина друга', done: false, author: 'Валік' },
+      { id: 'w2', list: 'watch', text: 'Шоу Трумана', done: false, author: 'Ксюша' },
+      { id: 'g1', list: 'go', text: 'Кафе на набережній', done: false, author: 'Ксюша' },
     ],
     calendar: [
       { type: 'event', id: 'e1', date: today, time: '19:00', title: 'Кіно', who: 'Валік' },
@@ -1186,6 +1504,28 @@ function demoState() {
       ],
     },
     cats: CATS.map(([name, icon]) => ({ name, icon })),
+    light: (() => {
+      const k = kyivNow(), m = Math.ceil((k.min + 110) / 30) * 30, h = x => hhmm(x);
+      return { group: '3.2', synced: h(k.min - 4), today, tomorrow: addDays(today, 1),
+        todayList: m + 120 < 1440 ? [{ start: h(m), end: h(m + 120) }] : [], tomorrowList: [{ start: '08:00', end: '10:00' }, { start: '18:00', end: '20:00' }] };
+    })(),
+    chores: [
+      { id: 'c1', title: 'Винести сміття', every: 2, due: today, left: 0, assignee: 'Ксюша', mine: false, anyone: false, lastDone: addDays(today, -2) },
+      { id: 'c2', title: 'Полити квіти', every: 3, due: addDays(today, -1), left: -1, assignee: 'Валік', mine: true, anyone: false, lastDone: addDays(today, -4) },
+      { id: 'c3', title: 'Помити підлогу', every: 7, due: addDays(today, 3), left: 3, assignee: 'Валік', mine: true, anyone: false, lastDone: addDays(today, -4) },
+    ],
+    choreStats: [{ name: 'Ксюша', n: 6 }, { name: 'Валік', n: 5 }],
+    prefs: [
+      { id: 'f1', kind: 'love', text: 'Капучино на кокосовому', mine: false, who: 'Ксюша' },
+      { id: 'f2', kind: 'love', text: 'Півонії', mine: false, who: 'Ксюша' },
+      { id: 'f3', kind: 'hate', text: 'Фільми жахів', mine: false, who: 'Ксюша' },
+      { id: 'f4', kind: 'love', text: 'Кальян на кокосовому вугіллі', mine: true, who: 'Валік' },
+    ],
+    notes: [
+      { id: 'n1', title: 'Wi-Fi', body: 'Мережа: Home_5G\nПароль: demo-1234', author: 'Валік', photo: false, secret: true },
+      { id: 'n2', title: 'Лічильники', body: 'Світло: 14 230\nВода: 512', author: 'Ксюша', photo: false, secret: false },
+      { id: 'n3', title: 'Сантехнік Олег', body: '+380 00 000 00 00', author: 'Валік', photo: false, secret: false },
+    ],
   };
 }
 let D = null;
