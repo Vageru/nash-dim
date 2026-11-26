@@ -75,7 +75,10 @@
   .icon { width: 36px; height: 36px; border-radius: 10px; background: var(--sep); display: grid; place-items: center; font-size: 19px; flex: none; }
 
   .add { display: flex; gap: 8px; margin-bottom: 12px; }
-  .add input { flex: 1; border: 0; background: var(--card); border-radius: 12px; padding: 13px 14px; outline: none; min-width: 0; }
+  .add input, .add textarea { flex: 1; border: 0; background: var(--card); border-radius: 12px; padding: 13px 14px; outline: none; min-width: 0; }
+  .add textarea { resize: none; overflow: hidden; line-height: 1.35; min-height: 48px; max-height: 40vh; display: block; }
+  .add { align-items: stretch; }
+  .add button { min-height: 48px; }
   .add button { background: var(--accent); color: var(--accent-text); border-radius: 12px; padding: 0 18px; font-size: 22px; font-weight: 600; }
 
   .btn { display: block; width: 100%; padding: 14px; border-radius: 12px; font-weight: 600; text-align: center; }
@@ -167,6 +170,14 @@
   #toast { position: fixed; left: 50%; top: calc(12px + env(safe-area-inset-top)); transform: translate(-50%, -20px); background: rgba(30,30,35,.92); color: #fff;
     padding: 10px 16px; border-radius: 20px; font-size: 14px; opacity: 0; transition: all .25s; z-index: 40; pointer-events: none; max-width: 86vw; text-align: center; }
   #toast.on { opacity: 1; transform: translate(-50%, 0); }
+  #sync { position: fixed; right: 10px; top: calc(8px + env(safe-area-inset-top)); z-index: 35; font-size: 12px; font-weight: 600; padding: 5px 10px; border-radius: 14px;
+    background: var(--card); color: var(--hint); box-shadow: 0 1px 4px rgba(0,0,0,.12); opacity: 0; transform: translateY(-8px); transition: all .2s; pointer-events: none; }
+  #sync.on { opacity: 1; transform: none; }
+  #sync.ok { color: var(--ok); }
+  #sync.bad { color: var(--warn); }
+  .split .seg { margin-bottom: 8px; }
+  .split .calc { font-size: 13px; color: var(--hint); margin: 0 4px; }
+  .sub .sh { color: var(--accent); }
   .demo { background: rgba(224,145,44,.15); color: var(--warn); font-size: 13px; text-align: center; padding: 8px; border-radius: 10px; margin-bottom: 10px; }
 </style>
 </head>
@@ -181,6 +192,7 @@
 <div id="backdrop"></div>
 <div id="sheet"></div>
 <div id="toast"></div>
+<div id="sync"></div>
 <div id="viewer"><img alt=""><div class="cap"></div></div>
 <input type="file" id="filePick" accept="image/*" hidden>
 
@@ -192,9 +204,9 @@ const API_URL = 'https://script.google.com/macros/s/AKfycbxvh_6TuXciVZGEDBpVUwWO
 /* ===================== ОСНОВА ===================== */
 const tg = window.Telegram && window.Telegram.WebApp;
 const DEMO = !tg || !tg.initData;
-let S = null;                 // стан із сервера
+let S = null;                 // те, що бачимо: стан сервера + ще не надіслані зміни
+let SERVER = null;            // останній стан, який прийшов із сервера
 let tab = 'lists', listTab = 'shop';
-let busy = false;
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -221,31 +233,238 @@ function money(n) {
 function haptic(type) { try { tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred(type); } catch (e) {} }
 function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('on'), 2200); }
 
-/* ===================== СЕРВЕР ===================== */
-async function api(action, data = {}) {
-  if (busy && action !== 'state') return false;
-  busy = true; $('#bar').classList.add('on');
+/* ===================== ЧЕРГА ЗМІН ===================== */
+// Кожна дія одразу видна на екрані, а на сервер летить пачкою трохи згодом.
+// Черга лежить у пам'яті телефона: якщо зв'язок зник чи застосунок закрили – надішлеться пізніше.
+const UID = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id) || 'demo';
+const LS_Q = 'nd_q_' + UID, LS_S = 'nd_s_' + UID;
+const store = (k, v) => { if (DEMO) return; try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+const load = k => { if (DEMO) return null; try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
+const clone = o => JSON.parse(JSON.stringify(o));
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const newId = () => 'c' + Date.now().toString(36).slice(-6) + Math.random().toString(36).slice(2, 8);
+const num = v => Number(String(v == null ? '' : v).replace(',', '.').replace(/\s/g, ''));
+let Q = load(LS_Q) || [];
+let inflight = false, flushT = null, firstQueued = 0, retryMs = 0, netDown = false, savedT = null, lastSync = 0;
+const CREATES = { item_add: 'id', event_add: 'id', off_add: 'id', exp_add: 'id', pay_add: 'id', loan_add: 'id', pay_paid: 'expId', mono_decide: 'expId' };
+const DIRECT = ['mono_connect', 'mono_disconnect', 'item_set_photo', 'item_remove_photo'];
+
+function rebuild() {
+  if (!SERVER) return;
+  S = clone(SERVER);
+  S.money.moves = S.money.moves || [];
+  Q.forEach(op => { try { LOCAL[op.action] && LOCAL[op.action](S, op.data); } catch (e) {} });
+}
+/** Додає зміну: одразу на екран, на сервер – пачкою */
+function enqueue(action, data, delay = 1200) {
+  data = Object.assign({}, data);
+  if (CREATES[action] && !data[CREATES[action]]) data[CREATES[action]] = newId();
+  Q.push({ opId: newId(), action, data });
+  store(LS_Q, Q);
+  if (!firstQueued) firstQueued = Date.now();
+  try { LOCAL[action] && LOCAL[action](S, data); } catch (e) {}
+  render(); status();
+  // не чекаємо вічно, якщо людина клацає без зупинки
+  schedule(Date.now() - firstQueued > 5000 ? 0 : delay);
+  return data;
+}
+function schedule(ms) { clearTimeout(flushT); flushT = setTimeout(flush, ms); }
+async function post(body, keepalive) {
+  if (DEMO) { await sleep(350); return demoServer(body); }
+  const r = await fetch(API_URL, { method: 'POST', keepalive: !!keepalive, headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(Object.assign({ api: 1, initData: tg.initData }, body)) });
+  return r.json();
+}
+function authFail(res) {
+  if (res.error === 'not_member') { fatal('Спершу приєднайтесь у боті', 'Напишіть боту /start і код доступу, потім відкрийте застосунок ще раз'); return true; }
+  if (res.error === 'auth') { fatal('Не вдалося перевірити вхід', 'Закрийте й відкрийте застосунок ще раз з Telegram'); return true; }
+  return false;
+}
+/** Надсилає накопичені зміни (або просто оновлює стан, якщо черга порожня) */
+async function flush(keepalive) {
+  if (inflight) { schedule(300); return; }
+  clearTimeout(flushT);
+  inflight = true; firstQueued = 0; status();
+  const ops = Q.slice(0, 40);
   try {
-    let res;
-    if (DEMO) { await new Promise(r => setTimeout(r, 250)); res = demoApi(action, data); }
-    else {
-      const r = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ api: 1, initData: tg.initData, action, data }) });
-      res = await r.json();
-    }
-    if (!res.ok) {
-      if (res.error === 'not_member') return fatal('Спершу приєднайтесь у боті', 'Напишіть боту /start і код доступу, потім відкрийте застосунок ще раз');
-      if (res.error === 'auth') return fatal('Не вдалося перевірити вхід', 'Закрийте й відкрийте застосунок ще раз з Telegram');
-      haptic('error'); toast(res.error); return false;
-    }
-    S = res.state;
-    if (res.msg && action !== 'state') { haptic('success'); toast(res.msg); }
-    render();
+    const res = await post({ action: 'batch', data: { ops } }, keepalive);
+    if (!res.ok) { if (authFail(res)) return; throw new Error(res.error || 'error'); }
+    const done = {};
+    (res.results || []).forEach(r => {
+      done[r.opId] = 1;
+      if (!r.ok) { haptic('error'); toast(r.error); }
+    });
+    Q = Q.filter(o => !done[o.opId]); store(LS_Q, Q);
+    SERVER = res.state; store(LS_S, SERVER);
+    lastSync = Date.now(); netDown = false; retryMs = 0;
+    if (ops.length && !Q.length) { clearTimeout(savedT); savedT = setTimeout(() => { savedT = null; status(); }, 1600); }
+    rebuild(); render();
+    if (Q.length) schedule(50);
+  } catch (e) {
+    netDown = true; retryMs = Math.min(30000, (retryMs || 1500) * 2);
+    if (!SERVER) $('#view').innerHTML = '<div class="empty" style="padding-top:80px">Немає зв\'язку з ботом<br>Пробую ще раз…</div>';
+    schedule(retryMs);
+  } finally { inflight = false; status(); }
+}
+function status() {
+  const el = $('#sync');
+  $('#bar').classList.toggle('on', inflight && Q.length > 0);
+  if (Q.length && netDown) { el.className = 'on bad'; el.textContent = '⚠️ Немає зв\'язку – збережу пізніше'; }
+  else if (Q.length) { el.className = 'on'; el.textContent = 'Зберігається…'; }
+  else if (savedT) { el.className = 'on ok'; el.textContent = 'Збережено ✓'; }
+  else el.className = '';
+}
+/** Дії, яким потрібна відповідь сервера одразу (фото, підключення mono) */
+async function direct(action, data) {
+  $('#bar').classList.add('on');
+  try {
+    while (inflight) await sleep(150);
+    if (Q.length) { await flush(); if (Q.length) { toast('Немає зв\'язку з ботом, спробуйте ще раз'); return false; } }
+    inflight = true;
+    const res = await post({ action, data });
+    if (!res.ok) { if (authFail(res)) return false; haptic('error'); toast(res.error); return false; }
+    SERVER = res.state; store(LS_S, SERVER); lastSync = Date.now();
+    rebuild(); render();
+    if (res.msg) { haptic('success'); toast(res.msg); }
     return true;
   } catch (e) {
     haptic('error'); toast('Немає зв\'язку з ботом, спробуйте ще раз'); return false;
-  } finally { busy = false; $('#bar').classList.remove('on'); }
+  } finally { inflight = false; $('#bar').classList.remove('on'); status(); }
 }
+function refresh() { if (!inflight) schedule(0); }
+
+/* ---- як кожна зміна виглядає на екрані ще до відповіді сервера ---- */
+const myName = st => st.me ? st.me.name : 'Я';
+const pName = st => st.partner ? st.partner.name : 'Партнер';
+const catIcon = (st, n) => (st.cats.find(c => c.name === n) || { icon: '📦' }).icon;
+function netOf(st) { const b = st.money.balance; return b ? (b.iOwe ? -b.amount : b.amount) : 0; } // > 0: партнер винен мені
+function setNet(st, n) {
+  n = Math.round(n * 100) / 100;
+  st.money.balance = Math.abs(n) < 0.01 ? null
+    : n > 0 ? { from: pName(st), to: myName(st), amount: n, iOwe: false } : { from: myName(st), to: pName(st), amount: -n, iOwe: true };
+}
+function shareFrom(amount, split, share) { return split === 'all' ? amount : split === 'custom' ? num(share) : null; }
+function expNet(e) { if (e.personal) return 0; const s = e.share != null ? Number(e.share) : e.amount / 2; return e.mine ? s : -s; }
+function catAdd(st, name, d) {
+  const m = st.money; let c = m.byCat.find(x => x.name === name);
+  if (!c) { c = { name, icon: catIcon(st, name), sum: 0 }; m.byCat.push(c); }
+  c.sum += d; m.byCat = m.byCat.filter(x => x.sum > 0.001).sort((a, b) => b.sum - a.sum);
+}
+function addExp(st, e) {
+  if (e.date.slice(0, 7) === st.today.slice(0, 7)) {
+    st.money.expenses.unshift(e); st.money.total += e.amount;
+    if (e.personal) st.money.personal = (st.money.personal || 0) + e.amount; else st.money.shared = (st.money.shared || 0) + e.amount;
+    catAdd(st, e.category, e.amount);
+  }
+  setNet(st, netOf(st) + expNet(e));
+}
+function sortCal(st) { st.calendar.sort((x, y) => (x.date + (x.time || '99')) < (y.date + (y.time || '99')) ? -1 : 1); }
+function payLeft(st, day) {
+  const [y, m, d] = st.today.split('-').map(Number);
+  const dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return Math.min(day, dim) - d;
+}
+const LOCAL = {
+  item_add(st, d) { if (!st.items.some(i => i.id === d.id)) st.items.push({ id: d.id, list: d.list, text: d.text, done: false, author: myName(st) }); },
+  item_set_done(st, d) { const i = st.items.find(x => x.id === d.id); if (i) i.done = !!d.done; },
+  item_edit(st, d) { const i = st.items.find(x => x.id === d.id); if (i) i.text = d.text.trim(); },
+  item_delete(st, d) { st.items = st.items.filter(i => i.id !== d.id); },
+  items_clear(st, d) { st.items = st.items.filter(i => !(i.list === d.list && i.done)); },
+  event_add(st, d) { st.calendar.push({ type: 'event', id: d.id, date: d.date, time: d.time || '', title: d.title.trim(), who: myName(st), mine: true }); sortCal(st); },
+  off_add(st, d) {
+    const who = d.who === 'partner' ? pName(st) : myName(st);
+    for (let c = d.date, i = 0; c <= (d.date_to || d.date) && i < 62; c = addDays(c, 1), i++)
+      st.calendar.push({ type: 'off', id: d.id + '_' + i, date: c, time: '', title: d.note || '', who, mine: d.who !== 'partner' });
+    sortCal(st);
+  },
+  cal_delete(st, d) { st.calendar = st.calendar.filter(c => !(c.type === d.type && c.id === d.id)); },
+  exp_add(st, d) {
+    const amount = num(d.amount), personal = !!d.personal, mine = personal || d.payer !== 'partner', cat = d.category || 'інше';
+    addExp(st, { id: d.id, date: d.date || st.today, amount, category: cat, icon: catIcon(st, cat), note: (d.note || '').trim(),
+      who: mine ? myName(st) : pName(st), personal, mine, share: personal ? null : shareFrom(amount, d.split, d.share) });
+  },
+  exp_delete(st, d) {
+    const m = st.money, e = m.expenses.find(x => x.id === d.id); if (!e) return;
+    m.expenses = m.expenses.filter(x => x !== e); m.total -= e.amount;
+    if (e.personal) m.personal -= e.amount; else m.shared -= e.amount;
+    catAdd(st, e.category, -e.amount);
+    setNet(st, netOf(st) - expNet(e));
+  },
+  exp_personal(st, d) {
+    const m = st.money, e = m.expenses.find(x => x.id === d.id); if (!e || !e.mine) return;
+    const before = expNet(e); e.personal = !e.personal;
+    if (e.personal) { m.personal += e.amount; m.shared -= e.amount; } else { m.personal -= e.amount; m.shared += e.amount; }
+    setNet(st, netOf(st) - before + expNet(e));
+  },
+  exp_set_share(st, d) {
+    const e = st.money.expenses.find(x => x.id === d.id); if (!e || e.personal) return;
+    const before = expNet(e); e.share = shareFrom(e.amount, d.split, d.share);
+    setNet(st, netOf(st) - before + expNet(e));
+  },
+  loan_add(st, d) {
+    const a = num(d.amount), fromMe = d.dir !== 'partner_to_me';
+    st.money.moves.unshift({ id: d.id, kind: 'loan', date: d.date || st.today, amount: a, from: fromMe ? myName(st) : pName(st), to: fromMe ? pName(st) : myName(st), note: (d.note || '').trim() });
+    setNet(st, netOf(st) + (fromMe ? a : -a));
+  },
+  move_delete(st, d) {
+    const mv = st.money.moves.find(x => x.id === d.id); if (!mv) return;
+    st.money.moves = st.money.moves.filter(x => x !== mv);
+    setNet(st, netOf(st) - (mv.from === myName(st) ? mv.amount : -mv.amount));
+  },
+  settle(st) {
+    const b = st.money.balance; if (!b) return;
+    st.money.moves.unshift({ id: 'tmp' + newId(), kind: 'settle', date: st.today, amount: b.amount, from: b.from, to: b.to, note: 'розрахунок' });
+    st.money.balance = null;
+  },
+  pay_add(st, d) {
+    const amount = String(d.amount || '').trim() === '' ? null : num(d.amount), day = Number(d.day);
+    st.money.payments.push({ id: d.id, title: d.title.trim(), day, amount, who: d.who, whoName: d.who === 'me' ? myName(st) : d.who === 'partner' ? pName(st) : '',
+      category: d.category, paid: false, left: payLeft(st, day) });
+    st.money.payments.sort((a, b) => a.day - b.day);
+  },
+  pay_paid(st, d) {
+    const p = st.money.payments.find(x => x.id === d.id); if (!p) return;
+    p.paid = true;
+    const amount = num(d.amount);
+    if (amount > 0) {
+      const mine = d.payer !== 'partner', cat = p.category || 'комуналка';
+      addExp(st, { id: d.expId, date: st.today, amount, category: cat, icon: catIcon(st, cat), note: p.title, who: mine ? myName(st) : pName(st),
+        personal: false, mine, share: shareFrom(amount, d.split, d.share) });
+    }
+  },
+  pay_unpaid(st, d) { const p = st.money.payments.find(x => x.id === d.id); if (p) p.paid = false; },
+  pay_delete(st, d) { st.money.payments = st.money.payments.filter(p => p.id !== d.id); },
+  mono_decide(st, d) {
+    const mono = st.money.mono; if (!mono) return;
+    const p = mono.pending.find(x => x.txid === d.txid); if (!p) return;
+    mono.pending = mono.pending.filter(x => x !== p);
+    if (d.kind === 'x') return;
+    if (d.kind === 'a') { const w = p.desc.toLowerCase(); if (mono.auto.indexOf(w) < 0) mono.auto.push(w); }
+    const cat = d.category || p.category, personal = d.kind === 'p';
+    addExp(st, { id: d.expId, date: p.date, amount: p.amount, category: cat, icon: catIcon(st, cat), note: p.desc, who: myName(st),
+      personal, mine: true, share: personal ? null : shareFrom(p.amount, d.split, d.share) });
+  },
+  mono_settings(st, d) { const m = st.money.mono; if (m) { m.ttl = d.ttl; m.auto = d.auto.slice(); } },
+};
+/* ---- перевірки ще на телефоні, щоб шторка закривалась одразу ---- */
+function shareErr(amount, d) {
+  if (d.split !== 'custom') return '';
+  const v = num(d.share);
+  if (String(d.share).trim() === '' || isNaN(v)) return 'Вкажіть, скільки закриває ' + (d.payer === 'partner' ? 'вам' : pName(S));
+  return v < 0 || v > amount ? 'Сума має бути від 0 до ' + money(amount) : '';
+}
+const VALID = {
+  item_edit: (st, d) => d.text.trim() ? '' : 'Назва порожня',
+  event_add: (st, d) => !d.title.trim() ? 'Напишіть, що за подія' : !d.date ? 'Оберіть дату' : d.date < st.today ? 'Ця дата вже минула' : '',
+  off_add: (st, d) => !d.date ? 'Оберіть дату' : d.date < st.today ? 'Ця дата вже минула' : d.date_to && d.date_to < d.date ? 'Кінець раніше за початок' : '',
+  exp_add: (st, d) => !(num(d.amount) > 0) ? 'Вкажіть суму' : d.personal ? '' : shareErr(num(d.amount), d),
+  pay_add: (st, d) => !d.title.trim() ? 'Напишіть назву' : String(d.amount).trim() && !(num(d.amount) > 0) ? 'Сума має бути числом' : '',
+  pay_paid: (st, d) => isNaN(num(d.amount)) || num(d.amount) < 0 ? 'Вкажіть суму' : num(d.amount) > 0 ? shareErr(num(d.amount), d) : '',
+  loan_add: (st, d) => !(num(d.amount) > 0) ? 'Вкажіть суму' : !st.partner ? 'Партнер ще не приєднався' : '',
+  exp_set_share: (st, d) => { const e = st.money.expenses.find(x => x.id === d.id); return e ? shareErr(e.amount, d) : 'Витрату не знайдено'; },
+  mono_decide: (st, d) => { const p = st.money.mono && st.money.mono.pending.find(x => x.txid === d.txid); return !p ? 'Час на вибір минув' : (d.kind === 's' || d.kind === 'a') ? shareErr(p.amount, d) : ''; },
+};
+
 function fatal(title, text) {
   $('#view').innerHTML = `<div class="empty" style="padding-top:80px"><b>🔒</b><div style="font-size:18px;color:var(--text);font-weight:600">${esc(title)}</div><p>${esc(text)}</p></div>`;
   $('nav.tabs').hidden = true; return false;
@@ -332,11 +551,17 @@ function render() {
   const mb = $('nav.tabs [data-tab=money]'); let bd = $('.badge', mb);
   if (pend) { if (!bd) { bd = document.createElement('i'); bd.className = 'badge'; mb.appendChild(bd); } bd.textContent = pend; } else if (bd) bd.remove();
   const v = $('#view');
+  const ae = document.activeElement, keepId = ae && v.contains(ae) && ae.id ? ae.id : '';
+  const typed = $('#itemText') ? $('#itemText').value : '';
   const demo = DEMO ? '<div class="demo">Демоверсія: дані тестові й нікуди не зберігаються</div>' : '';
   v.innerHTML = demo + (tab === 'lists' ? viewLists() : tab === 'cal' ? viewCal() : viewMoney());
   bindView();
+  const it = $('#itemText');
+  if (it && typed) { it.value = typed; grow(it); }
+  if (keepId && $('#' + keepId)) { const el = $('#' + keepId); el.focus(); try { el.setSelectionRange(el.value.length, el.value.length); } catch (e) {} }
   loadThumbs();
 }
+function grow(t) { t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; }
 
 const LIST_NAMES = { shop: ['🛒', 'Покупки', 'Що купити?'], plan: ['🏠', 'Для дому', 'Що треба для дому?'], wish: ['🎁', 'Бажання', 'Чого хочеться?'] };
 
@@ -357,11 +582,11 @@ function viewLists() {
     </div>`).join('');
   return `
     <div class="seg">${seg}</div>
-    <form class="add" id="addItem"><input id="itemText" placeholder="${pendingPhoto ? 'Як назвати?' : LIST_NAMES[listTab][2]}" autocomplete="off" enterkeyhint="done">${listTab !== 'shop' ? `<button type="button" class="cam ${pendingPhoto ? 'on' : ''}" id="addCam" aria-label="Додати фото">📷</button>` : ''}<button type="submit" aria-label="Додати">+</button></form>
+    <form class="add" id="addItem"><textarea id="itemText" rows="1" placeholder="${pendingPhoto ? 'Як назвати?' : LIST_NAMES[listTab][2]}" autocomplete="off"></textarea>${listTab !== 'shop' ? `<button type="button" class="cam ${pendingPhoto ? 'on' : ''}" id="addCam" aria-label="Додати фото">📷</button>` : ''}<button type="submit" aria-label="Додати">+</button></form>
     ${pendingPhoto && listTab !== 'shop' ? `<div class="pending"><img src="${pendingPhoto}" alt=""><span class="hint small">Фото додасться до пункту</span><button class="x" id="dropPhoto">✕</button></div>` : ''}
     <div class="card">${rows || `<div class="empty"><b>${LIST_NAMES[listTab][0]}</b>Поки порожньо. Напишіть вище й натисніть +</div>`}</div>
     ${doneN ? `<button class="btn ghost" id="clearDone" style="margin-top:8px">Прибрати позначені (${doneN})</button>` : ''}
-    <p class="hint small" style="margin:12px 8px">Натисніть на кружечок, щоб позначити. Натисніть на назву, щоб змінити чи видалити</p>`;
+    <p class="hint small" style="margin:12px 8px">Кілька пунктів – кожен з нового рядка. Натисніть на кружечок, щоб позначити, на назву – щоб змінити чи видалити</p>`;
 }
 
 function viewCal() {
@@ -392,7 +617,7 @@ function viewMoney() {
   const bal = m.balance
     ? `<div class="who">${esc(m.balance.from)} → ${esc(m.balance.to)}</div><div class="sum">${money(m.balance.amount)}</div>
        <button class="btn light" data-open="settle">🤝 Розрахувались</button>`
-    : `<div class="sum" style="font-size:22px;margin:4px 0">Ви в розрахунку 👌</div><div class="who">Спільні витрати діляться навпіл</div>`;
+    : `<div class="sum" style="font-size:22px;margin:4px 0">Ви в розрахунку 👌</div><div class="who">Спільні витрати діляться навпіл, якщо не вказати інакше</div>`;
   const maxCat = m.byCat.length ? m.byCat[0].sum : 1;
   const bars = m.byCat.slice(0, 5).map(c => `<div class="b"><span style="width:24px">${c.icon}</span><div class="track"><div class="fill" style="width:${Math.max(4, c.sum / maxCat * 100)}%"></div></div><span>${money(c.sum)}</span></div>`).join('');
   const pays = m.payments.map(p => `
@@ -405,8 +630,15 @@ function viewMoney() {
     <div class="row tap" data-exp="${e.id}">
       <div class="icon">${e.icon}</div>
       <div class="main"><div class="title">${esc(e.note || e.category)}${e.personal ? ' 🔒' : ''}</div>
-        <div class="sub">${esc(human(e.date))} · ${esc(e.who)}</div></div>
+        <div class="sub">${esc(human(e.date))} · ${esc(e.who)}${!e.personal && e.share != null ? ` · <span class="sh">${e.mine ? esc(partnerName()) + ' закриває' : 'ви закриваєте'} ${money(e.share)}</span>` : ''}</div></div>
       <div class="right">${money(e.amount)}</div>
+    </div>`).join('');
+  const moves = (m.moves || []).map(x => `
+    <div class="row tap" data-move="${esc(x.id)}">
+      <div class="icon">${x.kind === 'loan' ? '💸' : '🤝'}</div>
+      <div class="main"><div class="title">${esc(x.from)} → ${esc(x.to)}</div>
+        <div class="sub">${esc(human(x.date))} · ${x.kind === 'loan' ? 'позика' + (x.note && x.note !== 'позика' ? ': ' + esc(x.note) : '') : 'розрахунок'}</div></div>
+      <div class="right">${money(x.amount)}</div>
     </div>`).join('');
   const mono = m.mono || { connected: false, pending: [] };
   const pending = mono.pending.map(p => `
@@ -437,6 +669,7 @@ function viewMoney() {
     <div class="card">${pays || `<div class="empty">Комуналка, інтернет, оренда, підписки – додайте, і я нагадаю за 3 дні</div>`}</div>
     <h2>Витрати цього місяця</h2>
     <div class="card">${exps || `<div class="empty">Поки порожньо</div>`}</div>
+    ${moves ? `<h2>Позики й розрахунки</h2><div class="card">${moves}</div>` : ''}
     <h2>Автоматично з картки</h2>
     <div class="card"><div class="row tap" data-open="mono"><div class="icon">🏦</div>
       <div class="main"><div class="title">monobank</div><div class="sub">${mono.connected ? 'Підключено · ' + esc(mono.cards.join(', ')) : 'Покупки з картки приходитимуть самі'}</div></div>
@@ -449,16 +682,30 @@ function bindView() {
   $$('[data-list]').forEach(b => b.onclick = () => { listTab = b.dataset.list; render(); });
   $$('[data-view]').forEach(b => b.onclick = ev => { ev.stopPropagation(); viewPhoto(b.dataset.view); });
   const f = $('#addItem');
-  if (f) f.onsubmit = async ev => {
-    ev.preventDefault();
-    const t = $('#itemText').value.trim();
-    const withPhoto = pendingPhoto && listTab !== 'shop';
-    if (!t) { if (withPhoto) toast('Напишіть, що це'); return; }
-    if (await api('item_add', withPhoto ? { list: listTab, text: t, photo: pendingPhoto } : { list: listTab, text: t })) {
-      if (withPhoto) { pendingPhoto = null; render(); }
-      setTimeout(() => $('#itemText') && $('#itemText').focus(), 50);
-    }
-  };
+  if (f) {
+    const ta = $('#itemText');
+    ta.oninput = () => grow(ta);
+    // на комп'ютері Enter додає, Shift+Enter – новий рядок; на телефоні Enter – новий рядок
+    ta.onkeydown = ev => { if (ev.key === 'Enter' && !ev.shiftKey && !('ontouchstart' in window)) { ev.preventDefault(); f.requestSubmit ? f.requestSubmit() : f.onsubmit(ev); } };
+    f.onsubmit = async ev => {
+      ev.preventDefault();
+      const raw = ta.value;
+      const withPhoto = pendingPhoto && listTab !== 'shop';
+      if (withPhoto) {
+        const t = raw.replace(/\s+/g, ' ').trim();
+        if (!t) { toast('Напишіть, що це'); return; }
+        if (await direct('item_add', { list: listTab, text: t, photo: pendingPhoto })) { pendingPhoto = null; $('#itemText').value = ''; render(); }
+        return;
+      }
+      const parts = raw.split(/[\n,;]+/).map(x => x.replace(/^[\s•\-–*]+|\s+$/g, '').replace(/\s+/g, ' ')).filter(Boolean).map(x => x.slice(0, 120));
+      if (!parts.length) return;
+      ta.value = ''; grow(ta);
+      parts.forEach(t => enqueue('item_add', { list: listTab, text: t }));
+      try { tg && tg.HapticFeedback.selectionChanged(); } catch (e) {}
+      if (parts.length > 1) toast('Додано ' + parts.length + ' пунктів');
+      setTimeout(() => $('#itemText') && $('#itemText').focus(), 30);
+    };
+  }
   const cam = $('#addCam');
   if (cam) cam.onclick = async () => {
     const keep = $('#itemText').value;
@@ -467,25 +714,31 @@ function bindView() {
   };
   const dp = $('#dropPhoto'); if (dp) dp.onclick = () => { pendingPhoto = null; render(); };
   $$('[data-toggle]').forEach(b => b.onclick = () => {
-    const it = S.items.find(i => i.id === b.dataset.toggle);
-    if (it) { it.done = !it.done; render(); try { tg && tg.HapticFeedback.selectionChanged(); } catch (e) {} }
-    api('item_toggle', { id: b.dataset.toggle });
+    const it = S.items.find(i => i.id === b.dataset.toggle); if (!it) return;
+    try { tg && tg.HapticFeedback.selectionChanged(); } catch (e) {}
+    enqueue('item_set_done', { id: it.id, done: !it.done });
   });
   $$('[data-item]').forEach(b => b.onclick = () => sheetItem(b.dataset.item));
-  const cd = $('#clearDone'); if (cd) cd.onclick = () => api('items_clear', { list: listTab });
+  const cd = $('#clearDone'); if (cd) cd.onclick = () => enqueue('items_clear', { list: listTab }, 300);
   $$('[data-cal]').forEach(b => b.onclick = () => { const [t, id] = b.dataset.cal.split(':'); sheetCal(t, id); });
   $$('[data-pay]').forEach(b => b.onclick = () => sheetPay(b.dataset.pay));
   $$('[data-exp]').forEach(b => b.onclick = () => sheetExp(b.dataset.exp));
   $$('[data-mono]').forEach(b => b.onclick = () => sheetMono(b.dataset.mono));
-  $$('[data-md]').forEach(b => b.onclick = () => { const [kind, txid] = b.dataset.md.split(/:(.*)/s); b.disabled = true; api('mono_decide', { txid, kind }).then(() => { b.disabled = false; }); });
+  $$('[data-md]').forEach(b => b.onclick = () => { const [kind, txid] = b.dataset.md.split(/:(.*)/s); haptic('success'); enqueue('mono_decide', { txid, kind }, 600); });
+  $$('[data-move]').forEach(b => b.onclick = () => sheetMove(b.dataset.move));
   $$('[data-open]').forEach(b => b.onclick = () => ({ calAdd: sheetCalAdd, expAdd: () => sheetExpAdd('once'), settle: sheetSettle, mono: sheetMonoSettings })[b.dataset.open]());
 }
-let lastSync = Date.now();
 $$('nav.tabs button').forEach(b => b.onclick = () => {
   tab = b.dataset.tab; window.scrollTo(0, 0); render();
-  if (tab === 'money' && Date.now() - lastSync > 30000) { lastSync = Date.now(); api('state'); } // підтягнути нові покупки з mono
+  if (Date.now() - lastSync > 30000) refresh(); // підтягнути зміни партнера й нові покупки з mono
 });
-if (tg && tg.onEvent) tg.onEvent('activated', () => { lastSync = Date.now(); api('state'); });
+if (tg && tg.onEvent) tg.onEvent('activated', refresh);
+// застосунок згортають – пробуємо одразу дослати зміни (а якщо не вийде, вони чекають у черзі на телефоні)
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden' && Q.length && !inflight) flush(true);
+  if (document.visibilityState === 'visible') refresh();
+});
+window.addEventListener('online', refresh);
 
 /* ===================== ШТОРКИ ===================== */
 function openSheet(html, bind) {
@@ -522,11 +775,52 @@ function cats(selected) {
 function bindCats(root) { $$('[data-cat]', root).forEach(b => b.onclick = () => { $$('[data-cat]', root).forEach(x => x.classList.toggle('on', x === b)); }); }
 function catVal(root) { const b = root.querySelector('[data-cat].on'); return b ? b.dataset.cat : 'інше'; }
 const partnerName = () => S.partner ? S.partner.name : 'Партнер';
-async function submit(btn, action, data) {
-  btn.disabled = true;
-  const ok = await api(action, data);
-  btn.disabled = false;
-  if (ok) closeSheet();
+async function submit(btn, action, data, msg) {
+  if (DIRECT.indexOf(action) >= 0) {
+    btn.disabled = true;
+    const ok = await direct(action, data);
+    btn.disabled = false;
+    if (ok) closeSheet();
+    return;
+  }
+  const err = VALID[action] ? VALID[action](S, data) : '';
+  if (err) { haptic('error'); toast(err); return; }
+  enqueue(action, data, 400);
+  closeSheet(); haptic('success');
+  if (msg) toast(msg);
+}
+/* --- хто скільки закриває --- */
+function splitField(id, payerMe, amount, cur) {
+  // cur: null – навпіл, число – своя сума (або все)
+  const split = cur == null ? 'half' : amount != null && Number(cur) === Number(amount) ? 'all' : 'custom';
+  return `<div class="field split" id="${id}">
+    <label data-split-label>${splitLabel(payerMe)}</label>
+    ${seg('split', [['half', 'Навпіл'], ['all', 'Усю суму'], ['custom', 'Свою суму']], split)}
+    <div class="amount" data-custom ${split === 'custom' ? '' : 'hidden'} style="padding:6px 10px"><input data-share inputmode="decimal" placeholder="0" value="${split === 'custom' ? esc(cur) : ''}" style="font-size:26px"><span>грн</span></div>
+    <div class="calc" data-calc></div></div>`;
+}
+function splitLabel(payerMe) { return payerMe ? 'Скільки з цього закриває ' + esc(partnerName()) : 'Скільки з цього закриваєте ви'; }
+function bindSplit(box, getAmount, getPayerMe) {
+  const upd = () => {
+    const sp = segVal(box, 'split'), a = getAmount(), me = getPayerMe();
+    $('[data-split-label]', box).innerHTML = splitLabel(me);
+    $('[data-custom]', box).hidden = sp !== 'custom';
+    const who = me ? esc(partnerName()) : 'ви';
+    let t = '';
+    if (a > 0) {
+      const sh = sp === 'all' ? a : sp === 'custom' ? num($('[data-share]', box).value) : a / 2;
+      if (!isNaN(sh) && sh >= 0 && sh <= a) t = 'Борг: ' + (me ? who + ' → вам ' : 'ви → ' + esc(partnerName()) + ' ') + money(sh) + (sp === 'custom' && sh > 0 && sh < a ? ' · решта ' + money(a - sh) + ' на ' + (me ? 'вас' : esc(partnerName())) : '');
+    }
+    $('[data-calc]', box).innerHTML = t;
+  };
+  $$('[data-seg="split"] button', box).forEach(b => b.addEventListener('click', () => { setTimeout(upd, 0); if (b.dataset.v === 'custom') setTimeout(() => $('[data-share]', box).focus(), 50); }));
+  $('[data-share]', box).oninput = upd;
+  upd();
+  return upd;
+}
+function readSplit(box) {
+  const split = segVal(box, 'split');
+  return split === 'custom' ? { split, share: $('[data-share]', box).value.replace(',', '.').trim() } : { split };
 }
 
 /* --- пункт списку --- */
@@ -541,7 +835,7 @@ function sheetItem(id) {
     ${it.photo ? '<button class="btn ghost" id="nophoto">Прибрати фото</button>' : ''}
     <button class="btn danger" id="del">Видалити</button>`, r => {
     $('#save', r).onclick = e => submit(e.target, 'item_edit', { id, text: $('#t', r).value });
-    $('#del', r).onclick = e => submit(e.target, 'item_delete', { id });
+    $('#del', r).onclick = e => submit(e.target, 'item_delete', { id }, 'Видалено');
     $('#photo', r).onclick = async e => {
       const p = await pickPhoto(); if (!p) return;
       delete THUMBS[id]; delete FULLS[id];
@@ -576,8 +870,8 @@ function sheetCalAdd() {
     <button class="btn primary" id="save">Зберегти</button>`, r => {
     bindSegs(r, (name, v) => { if (name === 'kind') { $('#fEvent', r).hidden = v !== 'event'; $('#fOff', r).hidden = v !== 'off'; } });
     $('#save', r).onclick = e => segVal(r, 'kind') === 'event'
-      ? submit(e.target, 'event_add', { title: $('#evTitle', r).value, date: $('#evDate', r).value, time: $('#evTime', r).value })
-      : submit(e.target, 'off_add', { who: segVal(r, 'who'), date: $('#offFrom', r).value, date_to: $('#offTo', r).value, note: $('#offNote', r).value });
+      ? submit(e.target, 'event_add', { title: $('#evTitle', r).value, date: $('#evDate', r).value, time: $('#evTime', r).value }, 'Подію додано')
+      : submit(e.target, 'off_add', { who: segVal(r, 'who'), date: $('#offFrom', r).value, date_to: $('#offTo', r).value, note: $('#offNote', r).value }, 'Вихідні додано');
   });
 }
 function sheetCal(type, id) {
@@ -588,7 +882,7 @@ function sheetCal(type, id) {
       ${type === 'off' && c.title ? `<div class="hint">${esc(c.title)}</div>` : ''}
       ${type === 'event' ? `<div class="hint small">додав(-ла) ${esc(c.who)}</div>` : ''}</div>
     <button class="btn danger" id="del">Видалити</button>`, r => {
-    $('#del', r).onclick = e => submit(e.target, 'cal_delete', { type, id });
+    $('#del', r).onclick = e => submit(e.target, 'cal_delete', { type, id }, 'Видалено');
   });
 }
 
@@ -596,14 +890,17 @@ function sheetCal(type, id) {
 function sheetExpAdd(mode) {
   openSheet(`
     <h3>Нова витрата</h3>
-    ${seg('type', [['once', 'Разова'], ['regular', 'Постійна (щомісяця)']], mode)}
+    ${seg('type', [['once', 'Разова'], ['regular', 'Щомісяця'], ['loan', 'Позика']], mode)}
     <div id="fOnce" ${mode === 'once' ? '' : 'hidden'}>
       <div class="field"><div class="amount"><input id="exAmount" inputmode="decimal" placeholder="0"><span>грн</span></div></div>
       <div class="field"><label>Категорія</label>${cats('продукти')}</div>
       <div class="field"><label>Опис (необов'язково)</label><input id="exNote" placeholder="АТБ, таксі додому…"></div>
       <div class="field"><label>Дата</label><input type="date" id="exDate" value="${S.today}" max="${S.today}"></div>
-      <div class="field" id="payerBox"><label>Хто платив</label>${seg('payer', [['me', 'Я'], ['partner', esc(partnerName())]], 'me')}</div>
-      <div class="field"><div class="switch" id="exPersonal"><div class="t">🔒 Особиста<small>Бачите тільки ви, не ділиться навпіл</small></div><i></i></div></div>
+      <div class="field"><div class="switch" id="exPersonal"><div class="t">🔒 Особиста<small>Бачите тільки ви, у баланс не йде</small></div><i></i></div></div>
+      <div id="sharedBox">
+        <div class="field"><label>Хто платив</label>${seg('payer', [['me', 'Я'], ['partner', esc(partnerName())]], 'me')}</div>
+        ${splitField('exSplit', true, null, null)}
+      </div>
     </div>
     <div id="fRegular" ${mode === 'regular' ? '' : 'hidden'}>
       <div class="field"><label>Назва</label><input id="pTitle" placeholder="Інтернет, оренда, комуналка…"></div>
@@ -613,19 +910,36 @@ function sheetExpAdd(mode) {
       <div class="field"><label>Категорія</label>${cats('комуналка')}</div>
       <div class="field"><label>Хто зазвичай платить</label>${seg('who', [['me', 'Я'], ['partner', esc(partnerName())], ['', 'Будь-хто']], '')}</div>
     </div>
+    <div id="fLoan" ${mode === 'loan' ? '' : 'hidden'}>
+      <div class="field"><label>Хто кому позичив</label>${seg('dir', [['me_to_partner', 'Я → ' + esc(partnerName())], ['partner_to_me', esc(partnerName()) + ' → мені']], 'me_to_partner')}</div>
+      <div class="field"><div class="amount"><input id="lnAmount" inputmode="decimal" placeholder="0"><span>грн</span></div></div>
+      <div class="field"><label>На що (необов'язково)</label><input id="lnNote" placeholder="Квитки, ремонт телефона…"></div>
+      <div class="field"><label>Дата</label><input type="date" id="lnDate" value="${S.today}" max="${S.today}"></div>
+      <p class="hint small" style="margin:-4px 4px 12px">Позика не рахується у витрати місяця – вона лише змінює, хто кому винен</p>
+    </div>
     <button class="btn primary" id="save">Зберегти</button>`, r => {
-    bindSegs(r, (name, v) => { if (name === 'type') { $('#fOnce', r).hidden = v !== 'once'; $('#fRegular', r).hidden = v !== 'regular'; } });
+    const sw = $('#exPersonal', r), box = $('#exSplit', r);
+    const upd = bindSplit(box, () => num($('#exAmount', r).value), () => segVal(r, 'payer') !== 'partner');
+    bindSegs(r, (name, v) => {
+      if (name === 'type') { $('#fOnce', r).hidden = v !== 'once'; $('#fRegular', r).hidden = v !== 'regular'; $('#fLoan', r).hidden = v !== 'loan';
+        if (v === 'loan') setTimeout(() => $('#lnAmount', r).focus(), 50); }
+      if (name === 'payer' || name === 'split') upd();
+    });
+    $('#exAmount', r).addEventListener('input', upd);
     $$('.cats', r).forEach(bindCats);
-    const sw = $('#exPersonal', r);
-    sw.onclick = () => { sw.classList.toggle('on'); $('#payerBox', r).hidden = sw.classList.contains('on'); };
+    sw.onclick = () => { sw.classList.toggle('on'); $('#sharedBox', r).hidden = sw.classList.contains('on'); };
     if (mode === 'once') setTimeout(() => $('#exAmount', r).focus(), 300);
     $('#save', r).onclick = e => {
-      if (segVal(r, 'type') === 'once') {
-        submit(e.target, 'exp_add', { amount: $('#exAmount', r).value.replace(',', '.'), category: catVal($('#fOnce', r)), note: $('#exNote', r).value,
-          date: $('#exDate', r).value, payer: segVal(r, 'payer'), personal: sw.classList.contains('on') });
-      } else {
+      const t = segVal(r, 'type');
+      if (t === 'once') {
+        const personal = sw.classList.contains('on');
+        submit(e.target, 'exp_add', Object.assign({ amount: $('#exAmount', r).value.replace(',', '.'), category: catVal($('#fOnce', r)), note: $('#exNote', r).value,
+          date: $('#exDate', r).value, payer: segVal(r, 'payer'), personal }, personal ? {} : readSplit(box)), 'Витрату додано');
+      } else if (t === 'regular') {
         submit(e.target, 'pay_add', { title: $('#pTitle', r).value, amount: $('#pAmount', r).value.replace(',', '.').trim(), day: $('#pDay', r).value,
-          category: catVal($('#fRegular', r)), who: segVal(r, 'who') });
+          category: catVal($('#fRegular', r)), who: segVal(r, 'who') }, 'Платіж додано');
+      } else {
+        submit(e.target, 'loan_add', { amount: $('#lnAmount', r).value.replace(',', '.'), dir: segVal(r, 'dir'), note: $('#lnNote', r).value, date: $('#lnDate', r).value }, 'Позику записано');
       }
     };
   });
@@ -641,12 +955,18 @@ function sheetPay(id) {
       <button class="btn light" id="unpaid">↩️ Зняти позначку «оплачено»</button>` : `
       <div class="field"><label>Скільки сплатили</label><div class="amount"><input id="paySum" inputmode="decimal" placeholder="0" value="${p.amount != null ? p.amount : ''}"><span>грн</span></div></div>
       <div class="field"><label>Хто заплатив</label>${seg('payer', [['me', 'Я'], ['partner', esc(partnerName())]], me)}</div>
+      ${splitField('paySplit', me === 'me', null, null)}
       <button class="btn primary" id="paid">✅ Оплачено</button>
-      <p class="hint small" style="text-align:center">Сума запишеться у витрати й поділиться навпіл</p>`}
+      <p class="hint small" style="text-align:center">Сума запишеться у спільні витрати</p>`}
     <button class="btn danger" id="del">Видалити платіж</button>`, r => {
-    bindSegs(r);
-    if (p.paid) $('#unpaid', r).onclick = e => submit(e.target, 'pay_unpaid', { id });
-    else $('#paid', r).onclick = e => submit(e.target, 'pay_paid', { id, amount: $('#paySum', r).value.replace(',', '.') || '0', payer: segVal(r, 'payer') });
+    if (p.paid) { bindSegs(r); $('#unpaid', r).onclick = e => submit(e.target, 'pay_unpaid', { id }); }
+    else {
+      const box = $('#paySplit', r);
+      const upd = bindSplit(box, () => num($('#paySum', r).value), () => segVal(r, 'payer') !== 'partner');
+      bindSegs(r, () => upd());
+      $('#paySum', r).addEventListener('input', upd);
+      $('#paid', r).onclick = e => submit(e.target, 'pay_paid', Object.assign({ id, amount: $('#paySum', r).value.replace(',', '.').trim() || '0', payer: segVal(r, 'payer') }, readSplit(box)), 'Оплачено ✅');
+    }
     $('#del', r).onclick = e => askConfirm('Видалити платіж «' + p.title + '»?', () => submit(e.target, 'pay_delete', { id }));
   });
 }
@@ -656,11 +976,37 @@ function sheetExp(id) {
     <div class="info"><div class="hint small">${esc(human(e.date))} · ${esc(e.who)}</div>
       <div class="big">${e.icon} ${money(e.amount)}</div>
       <div class="hint">${esc(e.category)}${e.note ? ' · ' + esc(e.note) : ''}</div>
-      <div class="hint small" style="margin-top:6px">${e.personal ? '🔒 Особиста – бачите тільки ви' : '👥 Спільна – ділиться навпіл'}</div></div>
+      <div class="hint small" style="margin-top:6px">${e.personal ? '🔒 Особиста – бачите тільки ви' : e.share == null ? '👥 Спільна – навпіл' : '👥 Спільна – ' + (e.mine ? esc(partnerName()) + ' закриває ' : 'ви закриваєте ') + money(e.share)}</div></div>
+    ${e.personal ? '' : `<button class="btn light" id="share">⚖️ Змінити, хто скільки закриває</button>`}
     ${e.mine ? `<button class="btn light" id="kind">${e.personal ? '👥 Зробити спільною' : '🔒 Зробити особистою'}</button>` : ''}
     <button class="btn danger" id="del">Видалити витрату</button>`, r => {
+    if (!e.personal) $('#share', r).onclick = () => sheetShare(id);
     if (e.mine) $('#kind', r).onclick = ev => submit(ev.target, 'exp_personal', { id });
-    $('#del', r).onclick = ev => submit(ev.target, 'exp_delete', { id });
+    $('#del', r).onclick = ev => submit(ev.target, 'exp_delete', { id }, 'Видалено');
+  });
+}
+function sheetShare(id) {
+  const e = S.money.expenses.find(x => x.id === id); if (!e) return;
+  openSheet(`
+    <div class="info"><div class="hint small">${esc(human(e.date))} · платив(-ла) ${esc(e.who)}</div>
+      <div class="big">${e.icon} ${money(e.amount)}</div><div class="hint">${esc(e.note || e.category)}</div></div>
+    ${splitField('shSplit', e.mine, e.amount, e.share)}
+    <button class="btn primary" id="save">Зберегти</button>`, r => {
+    const box = $('#shSplit', r);
+    bindSplit(box, () => e.amount, () => e.mine);
+    bindSegs(r);
+    $('#save', r).onclick = ev => submit(ev.target, 'exp_set_share', Object.assign({ id }, readSplit(box), { payer: e.mine ? 'me' : 'partner' }), 'Розподіл змінено');
+  });
+}
+function sheetMove(id) {
+  const x = (S.money.moves || []).find(m => m.id === id); if (!x) return;
+  openSheet(`
+    <div class="info"><div class="hint small">${esc(human(x.date))} · ${x.kind === 'loan' ? 'позика' : 'розрахунок'}</div>
+      <div class="big">${x.kind === 'loan' ? '💸' : '🤝'} ${money(x.amount)}</div>
+      <div class="hint">${esc(x.from)} → ${esc(x.to)}${x.note && x.note !== 'позика' && x.note !== 'розрахунок' ? ' · ' + esc(x.note) : ''}</div></div>
+    <button class="btn danger" id="del">Видалити запис</button>
+    <p class="hint small" style="text-align:center">Баланс перерахується так, ніби цього запису не було</p>`, r => {
+    $('#del', r).onclick = ev => askConfirm('Видалити цей запис?', () => submit(ev.target, 'move_delete', { id }, 'Видалено'));
   });
 }
 function sheetMono(txid) {
@@ -669,12 +1015,16 @@ function sheetMono(txid) {
     <div class="info" style="text-align:center"><div class="hint small">🏦 monobank · ${esc(human(p.date))}</div>
       <div class="big" style="font-size:28px">${money(p.amount)}</div><div class="hint">${esc(p.desc)}</div></div>
     <div class="field"><label>Категорія</label>${cats(p.category)}</div>
-    <button class="btn primary" data-k="s">👥 Спільна – поділити навпіл</button>
+    ${splitField('mSplit', true, p.amount, null)}
+    <button class="btn primary" data-k="s">👥 Спільна</button>
     <button class="btn light" data-k="p">🔒 Особиста – бачу тільки я</button>
     <button class="btn light" data-k="a">👥 Завжди спільна: «${esc(p.desc)}»</button>
     <button class="btn danger" data-k="x">🙈 Не записувати</button>`, r => {
     bindCats(r);
-    $$('[data-k]', r).forEach(b => b.onclick = e => submit(e.target, 'mono_decide', { txid, kind: b.dataset.k, category: catVal(r) }));
+    const box = $('#mSplit', r);
+    bindSplit(box, () => p.amount, () => true);
+    bindSegs(r);
+    $$('[data-k]', r).forEach(b => b.onclick = e => submit(e.target, 'mono_decide', Object.assign({ txid, kind: b.dataset.k, category: catVal(r) }, b.dataset.k === 's' || b.dataset.k === 'a' ? readSplit(box) : {})));
   });
 }
 function sheetMonoSettings() {
@@ -716,7 +1066,7 @@ function sheetMonoSettings() {
       $('#autoW', r).value.split(',').map(w => w.trim().toLowerCase()).filter(Boolean).forEach(w => { if (auto.indexOf(w) < 0) auto.push(w); });
       $('#autoW', r).value = ''; draw();
     };
-    $('#save', r).onclick = e => submit(e.target, 'mono_settings', { ttl: Number(segVal(r, 'ttl')), auto });
+    $('#save', r).onclick = e => submit(e.target, 'mono_settings', { ttl: Number(segVal(r, 'ttl')), auto }, 'Збережено');
     $('#off', r).onclick = e => askConfirm('Відключити monobank? Нові покупки перестануть приходити', () => submit(e.target, 'mono_disconnect', {}));
   });
 }
@@ -727,7 +1077,7 @@ function sheetSettle() {
     <p class="hint" style="text-align:center">Натисніть, коли гроші вже передали – баланс обнулиться</p>
     <button class="btn primary" id="ok">🤝 Так, розрахувались</button>
     <button class="btn ghost" id="no">Ще ні</button>`, r => {
-    $('#ok', r).onclick = e => submit(e.target, 'settle', {});
+    $('#ok', r).onclick = e => submit(e.target, 'settle', {}, 'Записано 🤝');
     $('#no', r).onclick = closeSheet;
   });
 }
@@ -754,6 +1104,7 @@ function demoState() {
       monthName: 'листопад 2026', total: 19865, shared: 19665, personal: 200,
       byCat: [{ name: 'комуналка', icon: '💡', sum: 18415 }, { name: 'продукти', icon: '🛒', sum: 1250 }, { name: 'подарунки', icon: '🎁', sum: 200 }],
       balance: { from: 'Ксюша', to: 'Валік', amount: 832.5, iOwe: false },
+      moves: [{ id: 'm1', kind: 'loan', date: addDays(today, -3), amount: 500, from: 'Валік', to: 'Ксюша', note: 'квитки' }],
       payments: [
         { id: 'p1', title: 'Інтернет', day: 22, amount: 415, who: 'me', whoName: 'Валік', category: 'комуналка', paid: false, left: 3 },
         { id: 'p2', title: 'Комуналка', day: 25, amount: null, who: '', whoName: '', category: 'комуналка', paid: false, left: 6 },
@@ -764,7 +1115,7 @@ function demoState() {
         { txid: 't2', amount: 1240, desc: 'Rozetka', category: 'дім', icon: '🏠', date: today, left: 95 },
       ] },
       expenses: [
-        { id: 'x1', date: today, amount: 450, category: 'продукти', icon: '🛒', note: 'АТБ', who: 'Валік', personal: false, mine: true },
+        { id: 'x1', date: today, amount: 450, category: 'продукти', icon: '🛒', note: 'АТБ', who: 'Валік', personal: false, mine: true, share: 300 },
         { id: 'x2', date: today, amount: 200, category: 'подарунки', icon: '🎁', note: 'сюрприз', who: 'Валік', personal: true, mine: true },
         { id: 'x3', date: addDays(today, -1), amount: 800, category: 'продукти', icon: '🛒', note: 'Сільпо', who: 'Ксюша', personal: false, mine: false },
       ],
@@ -773,6 +1124,21 @@ function demoState() {
   };
 }
 let D = null;
+const DEMO_DONE = {};
+/** Демо-«сервер»: ті самі правила, що й на телефоні, але дані живуть лише до закриття сторінки */
+function demoServer(b) {
+  if (!D) D = demoState();
+  if (b.action !== 'batch') return demoApi(b.action, b.data);
+  const results = (b.data.ops || []).map(op => {
+    if (DEMO_DONE[op.opId]) return { opId: op.opId, ok: true, dup: true };
+    DEMO_DONE[op.opId] = 1;
+    const e = VALID[op.action] ? VALID[op.action](D, op.data) : '';
+    if (e) return { opId: op.opId, ok: false, error: e };
+    if (LOCAL[op.action]) { LOCAL[op.action](D, clone(op.data)); return { opId: op.opId, ok: true }; }
+    return { opId: op.opId, ok: false, error: 'Невідома дія' };
+  });
+  return { ok: true, results, state: clone(D) };
+}
 // намальований плед для демо (у справжньому застосунку тут ваші фото з Telegram)
 const DEMO_IMG = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300"><rect width="400" height="300" fill="#d9cfc4"/><rect x="60" y="70" width="280" height="170" rx="18" fill="#8a9aa8"/><g stroke="#c7d1da" stroke-width="10" opacity=".7"><path d="M60 120h280M60 170h280M60 220h280M110 70v170M170 70v170M230 70v170M290 70v170"/></g><path d="M300 240c20 0 34-10 40-26v26z" fill="#6f7f8c"/></svg>');
 function demoApi(a, d) {
@@ -781,58 +1147,58 @@ function demoApi(a, d) {
   const catIcon = n => (D.cats.find(c => c.name === n) || { icon: '📦' }).icon;
   const err = m => ({ ok: false, error: m });
   switch (a) {
-    case 'state': return { ok: true, state: D };
+    case 'state': return { ok: true, state: clone(D) };
     case 'item_add':
-      if (d.photo) { if (!d.text.trim()) return err('Напишіть назву'); D.items.push({ id: uid(), list: d.list, text: d.text.trim(), done: false, author: D.me.name, photo: true, _src: d.photo }); return { ok: true, msg: 'Додано з фото', state: D }; }
-      d.text.split(/[,\n]/).map(s => s.trim()).filter(Boolean).forEach(t => D.items.push({ id: uid(), list: d.list, text: t, done: false, author: D.me.name })); return { ok: true, msg: 'Додано', state: D };
-    case 'item_toggle': return { ok: true, state: D };
-    case 'item_edit': D.items.find(i => i.id === d.id).text = d.text; return { ok: true, msg: 'Збережено', state: D };
-    case 'item_delete': D.items = D.items.filter(i => i.id !== d.id); return { ok: true, msg: 'Видалено', state: D };
-    case 'items_clear': D.items = D.items.filter(i => !(i.list === d.list && i.done)); return { ok: true, msg: 'Прибрано', state: D };
-    case 'item_photo': return { ok: true, msg: 'Фото надіслано в чат з ботом', state: D };
+      if (d.photo) { if (!d.text.trim()) return err('Напишіть назву'); D.items.push({ id: uid(), list: d.list, text: d.text.trim(), done: false, author: D.me.name, photo: true, _src: d.photo }); return { ok: true, msg: 'Додано з фото', state: clone(D) }; }
+      d.text.split(/[,\n]/).map(s => s.trim()).filter(Boolean).forEach(t => D.items.push({ id: uid(), list: d.list, text: t, done: false, author: D.me.name })); return { ok: true, msg: 'Додано', state: clone(D) };
+    case 'item_toggle': return { ok: true, state: clone(D) };
+    case 'item_edit': D.items.find(i => i.id === d.id).text = d.text; return { ok: true, msg: 'Збережено', state: clone(D) };
+    case 'item_delete': D.items = D.items.filter(i => i.id !== d.id); return { ok: true, msg: 'Видалено', state: clone(D) };
+    case 'items_clear': D.items = D.items.filter(i => !(i.list === d.list && i.done)); return { ok: true, msg: 'Прибрано', state: clone(D) };
+    case 'item_photo': return { ok: true, msg: 'Фото надіслано в чат з ботом', state: clone(D) };
     case 'photo_get': { const it = D.items.find(i => i.id === d.id); return it ? { ok: true, data: it._src || DEMO_IMG } : err('Фото не знайдено'); }
-    case 'item_set_photo': { const it = D.items.find(i => i.id === d.id); it.photo = true; it._src = d.photo; return { ok: true, msg: 'Фото збережено', state: D }; }
-    case 'item_remove_photo': { const it = D.items.find(i => i.id === d.id); it.photo = false; delete it._src; return { ok: true, msg: 'Фото прибрано', state: D }; }
+    case 'item_set_photo': { const it = D.items.find(i => i.id === d.id); it.photo = true; it._src = d.photo; return { ok: true, msg: 'Фото збережено', state: clone(D) }; }
+    case 'item_remove_photo': { const it = D.items.find(i => i.id === d.id); it.photo = false; delete it._src; return { ok: true, msg: 'Фото прибрано', state: clone(D) }; }
     case 'event_add':
       if (!d.title.trim()) return err('Напишіть, що за подія');
       D.calendar.push({ type: 'event', id: uid(), date: d.date, time: d.time, title: d.title, who: D.me.name }); D.calendar.sort((x, y) => (x.date + (x.time || '99')) < (y.date + (y.time || '99')) ? -1 : 1);
-      return { ok: true, msg: 'Подію додано', state: D };
+      return { ok: true, msg: 'Подію додано', state: clone(D) };
     case 'off_add': {
       const who = d.who === 'partner' ? D.partner.name : D.me.name;
       for (let c = d.date, i = 0; c <= (d.date_to || d.date) && i < 62; c = addDays(c, 1), i++) D.calendar.push({ type: 'off', id: uid(), date: c, time: '', title: d.note, who });
       D.calendar.sort((x, y) => x.date < y.date ? -1 : 1);
-      return { ok: true, msg: 'Вихідні додано', state: D };
+      return { ok: true, msg: 'Вихідні додано', state: clone(D) };
     }
-    case 'cal_delete': D.calendar = D.calendar.filter(c => c.id !== d.id); return { ok: true, msg: 'Видалено', state: D };
+    case 'cal_delete': D.calendar = D.calendar.filter(c => c.id !== d.id); return { ok: true, msg: 'Видалено', state: clone(D) };
     case 'exp_add': {
       const amt = Number(d.amount); if (!(amt > 0)) return err('Вкажіть суму');
       D.money.expenses.unshift({ id: uid(), date: d.date, amount: amt, category: d.category, icon: catIcon(d.category), note: d.note, who: d.personal || d.payer === 'me' ? D.me.name : D.partner.name, personal: d.personal, mine: d.personal || d.payer === 'me' });
       D.money.total += amt; if (d.personal) D.money.personal += amt;
-      return { ok: true, msg: 'Витрату додано', state: D };
+      return { ok: true, msg: 'Витрату додано', state: clone(D) };
     }
-    case 'exp_delete': D.money.expenses = D.money.expenses.filter(e => e.id !== d.id); return { ok: true, msg: 'Видалено', state: D };
-    case 'exp_personal': { const e = D.money.expenses.find(x => x.id === d.id); e.personal = !e.personal; return { ok: true, state: D }; }
-    case 'settle': D.money.balance = null; return { ok: true, msg: 'Записано', state: D };
+    case 'exp_delete': D.money.expenses = D.money.expenses.filter(e => e.id !== d.id); return { ok: true, msg: 'Видалено', state: clone(D) };
+    case 'exp_personal': { const e = D.money.expenses.find(x => x.id === d.id); e.personal = !e.personal; return { ok: true, state: clone(D) }; }
+    case 'settle': D.money.balance = null; return { ok: true, msg: 'Записано', state: clone(D) };
     case 'pay_add':
       if (!d.title.trim()) return err('Напишіть назву');
       D.money.payments.push({ id: uid(), title: d.title, day: Number(d.day), amount: d.amount ? Number(d.amount) : null, who: d.who, whoName: d.who === 'me' ? D.me.name : d.who === 'partner' ? D.partner.name : '', category: d.category, paid: false, left: 5 });
-      return { ok: true, msg: 'Платіж додано', state: D };
-    case 'pay_paid': D.money.payments.find(p => p.id === d.id).paid = true; return { ok: true, msg: 'Оплачено', state: D };
-    case 'pay_unpaid': D.money.payments.find(p => p.id === d.id).paid = false; return { ok: true, msg: 'Позначку знято', state: D };
+      return { ok: true, msg: 'Платіж додано', state: clone(D) };
+    case 'pay_paid': D.money.payments.find(p => p.id === d.id).paid = true; return { ok: true, msg: 'Оплачено', state: clone(D) };
+    case 'pay_unpaid': D.money.payments.find(p => p.id === d.id).paid = false; return { ok: true, msg: 'Позначку знято', state: clone(D) };
     case 'mono_decide': {
       const p = D.money.mono.pending.find(x => x.txid === d.txid); if (!p) return err('Час на вибір минув');
       D.money.mono.pending = D.money.mono.pending.filter(x => x !== p);
-      if (d.kind === 'x') return { ok: true, msg: 'Видалено 🙈', state: D };
+      if (d.kind === 'x') return { ok: true, msg: 'Видалено 🙈', state: clone(D) };
       if (d.kind === 'a' && D.money.mono.auto.indexOf(p.desc.toLowerCase()) < 0) D.money.mono.auto.push(p.desc.toLowerCase());
       const cat = d.category || p.category;
       D.money.expenses.unshift({ id: uid(), date: p.date, amount: p.amount, category: cat, icon: catIcon(cat), note: p.desc, who: D.me.name, personal: d.kind === 'p', mine: true });
       D.money.total += p.amount; if (d.kind === 'p') D.money.personal += p.amount;
-      return { ok: true, msg: d.kind === 'p' ? 'Записано як особисту 🔒' : 'Записано як спільну 👥', state: D };
+      return { ok: true, msg: d.kind === 'p' ? 'Записано як особисту 🔒' : 'Записано як спільну 👥', state: clone(D) };
     }
-    case 'mono_connect': if ((d.token || '').length < 20) return err('Вставте токен повністю'); D.money.mono.connected = true; return { ok: true, msg: 'monobank підключено', state: D };
-    case 'mono_settings': D.money.mono.ttl = d.ttl; D.money.mono.auto = d.auto; return { ok: true, msg: 'Збережено', state: D };
-    case 'mono_disconnect': D.money.mono = { connected: false, cards: [], ttl: 3, auto: [], pending: [] }; return { ok: true, msg: 'monobank відключено', state: D };
-    case 'pay_delete': D.money.payments = D.money.payments.filter(p => p.id !== d.id); return { ok: true, msg: 'Видалено', state: D };
+    case 'mono_connect': if ((d.token || '').length < 20) return err('Вставте токен повністю'); D.money.mono.connected = true; return { ok: true, msg: 'monobank підключено', state: clone(D) };
+    case 'mono_settings': D.money.mono.ttl = d.ttl; D.money.mono.auto = d.auto; return { ok: true, msg: 'Збережено', state: clone(D) };
+    case 'mono_disconnect': D.money.mono = { connected: false, cards: [], ttl: 3, auto: [], pending: [] }; return { ok: true, msg: 'monobank відключено', state: clone(D) };
+    case 'pay_delete': D.money.payments = D.money.payments.filter(p => p.id !== d.id); return { ok: true, msg: 'Видалено', state: clone(D) };
   }
   return err('Невідома дія');
 }
@@ -840,7 +1206,12 @@ function demoApi(a, d) {
 /* ===================== СТАРТ ===================== */
 if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
 if (!DEMO && API_URL.indexOf('http') !== 0) fatal('Застосунок не налаштовано', 'Вставте URL Apps Script у змінну API_URL в index.html');
-else { $('#view').innerHTML = '<div class="empty" style="padding-top:80px">Завантаження…</div>'; api('state'); }
+else {
+  SERVER = load(LS_S);
+  if (SERVER && SERVER.money) { rebuild(); render(); }  // показуємо одразу останнє збережене, свіже підтягнеться за секунду
+  else { SERVER = null; $('#view').innerHTML = '<div class="empty" style="padding-top:80px">Завантаження…</div>'; }
+  flush();
+}
 </script>
 </body>
 </html>
