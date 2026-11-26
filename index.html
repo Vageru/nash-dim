@@ -226,7 +226,7 @@ function rel(s) {
   return human(s)[0].toUpperCase() + human(s).slice(1);
 }
 function money(n) {
-  const r = Math.round(Number(n) * 100) / 100;
+  const r = Math.round(Number(n)); // без копійок
   const [i, f] = (Math.abs(r) % 1 ? Math.abs(r).toFixed(2) : String(Math.abs(r))).split('.');
   return (r < 0 ? '−' : '') + i.replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + (f ? ',' + f : '') + ' грн';
 }
@@ -253,6 +253,7 @@ function rebuild() {
   if (!SERVER) return;
   S = clone(SERVER);
   S.money.moves = S.money.moves || [];
+  S.money.breakdown = S.money.breakdown || [];
   Q.forEach(op => { try { LOCAL[op.action] && LOCAL[op.action](S, op.data); } catch (e) {} });
 }
 /** Додає зміну: одразу на екран, на сервер – пачкою */
@@ -343,7 +344,7 @@ function setNet(st, n) {
   st.money.balance = Math.abs(n) < 0.01 ? null
     : n > 0 ? { from: pName(st), to: myName(st), amount: n, iOwe: false } : { from: myName(st), to: pName(st), amount: -n, iOwe: true };
 }
-function shareFrom(amount, split, share) { return split === 'all' ? amount : split === 'custom' ? num(share) : null; }
+function shareFrom(amount, split, share) { return split === 'all' ? amount : split === 'none' ? 0 : split === 'custom' ? num(share) : null; }
 function expNet(e) { if (e.personal) return 0; const s = e.share != null ? Number(e.share) : e.amount / 2; return e.mine ? s : -s; }
 function catAdd(st, name, d) {
   const m = st.money; let c = m.byCat.find(x => x.name === name);
@@ -357,7 +358,16 @@ function addExp(st, e) {
     catAdd(st, e.category, e.amount);
   }
   setNet(st, netOf(st) + expNet(e));
+  if (!e.personal && expNet(e)) bdPush(st, bdOfExp(e));
 }
+/* розшифровка боргу: які записи його склали */
+function bdPush(st, x) {
+  const b = st.money.breakdown = st.money.breakdown || [];
+  b.push(x);
+  if (Math.abs(netOf(st)) < 1) st.money.breakdown = [];
+}
+function bdDrop(st, id) { st.money.breakdown = (st.money.breakdown || []).filter(x => x.id !== id); }
+function bdOfExp(e) { return { id: e.id, date: e.date, kind: 'shared', icon: e.icon, title: e.note || e.category, amount: e.amount, payer: e.who, mine: e.mine, share: e.share, net: expNet(e) }; }
 function sortCal(st) { st.calendar.sort((x, y) => (x.date + (x.time || '99')) < (y.date + (y.time || '99')) ? -1 : 1); }
 function payLeft(st, day) {
   const [y, m, d] = st.today.split('-').map(Number);
@@ -388,33 +398,39 @@ const LOCAL = {
     m.expenses = m.expenses.filter(x => x !== e); m.total -= e.amount;
     if (e.personal) m.personal -= e.amount; else m.shared -= e.amount;
     catAdd(st, e.category, -e.amount);
-    setNet(st, netOf(st) - expNet(e));
+    setNet(st, netOf(st) - expNet(e)); bdDrop(st, e.id);
   },
   exp_personal(st, d) {
     const m = st.money, e = m.expenses.find(x => x.id === d.id); if (!e || !e.mine) return;
     const before = expNet(e); e.personal = !e.personal;
     if (e.personal) { m.personal += e.amount; m.shared -= e.amount; } else { m.personal -= e.amount; m.shared += e.amount; }
     setNet(st, netOf(st) - before + expNet(e));
+    if (e.personal || !expNet(e)) bdDrop(st, e.id); else bdPush(st, bdOfExp(e));
   },
   exp_set_share(st, d) {
     const e = st.money.expenses.find(x => x.id === d.id); if (!e || e.personal) return;
     const before = expNet(e); e.share = shareFrom(e.amount, d.split, d.share);
     setNet(st, netOf(st) - before + expNet(e));
+    const x = (st.money.breakdown || []).find(y => y.id === e.id);
+    if (!expNet(e)) { bdDrop(st, e.id); if (Math.abs(netOf(st)) < 1) st.money.breakdown = []; }
+    else if (x) { x.share = e.share; x.net = expNet(e); if (Math.abs(netOf(st)) < 1) st.money.breakdown = []; } else bdPush(st, bdOfExp(e));
   },
   loan_add(st, d) {
     const a = num(d.amount), fromMe = d.dir !== 'partner_to_me';
     st.money.moves.unshift({ id: d.id, kind: 'loan', date: d.date || st.today, amount: a, from: fromMe ? myName(st) : pName(st), to: fromMe ? pName(st) : myName(st), note: (d.note || '').trim() });
     setNet(st, netOf(st) + (fromMe ? a : -a));
+    bdPush(st, { id: d.id, date: d.date || st.today, kind: 'loan', icon: '💸', title: 'Позика' + (d.note && d.note.trim() ? ': ' + d.note.trim() : ''), amount: a,
+      payer: fromMe ? myName(st) : pName(st), mine: fromMe, share: null, net: fromMe ? a : -a });
   },
   move_delete(st, d) {
     const mv = st.money.moves.find(x => x.id === d.id); if (!mv) return;
     st.money.moves = st.money.moves.filter(x => x !== mv);
-    setNet(st, netOf(st) - (mv.from === myName(st) ? mv.amount : -mv.amount));
+    setNet(st, netOf(st) - (mv.from === myName(st) ? mv.amount : -mv.amount)); bdDrop(st, mv.id);
   },
   settle(st) {
     const b = st.money.balance; if (!b) return;
     st.money.moves.unshift({ id: 'tmp' + newId(), kind: 'settle', date: st.today, amount: b.amount, from: b.from, to: b.to, note: 'розрахунок' });
-    st.money.balance = null;
+    st.money.balance = null; st.money.breakdown = [];
   },
   pay_add(st, d) {
     const amount = String(d.amount || '').trim() === '' ? null : num(d.amount), day = Number(d.day);
@@ -615,9 +631,10 @@ function payChip(p) {
 function viewMoney() {
   const m = S.money;
   const bal = m.balance
-    ? `<div class="who">${esc(m.balance.from)} → ${esc(m.balance.to)}</div><div class="sum">${money(m.balance.amount)}</div>
-       <button class="btn light" data-open="settle">🤝 Розрахувались</button>`
-    : `<div class="sum" style="font-size:22px;margin:4px 0">Ви в розрахунку 👌</div><div class="who">Спільні витрати діляться навпіл, якщо не вказати інакше</div>`;
+    ? `<div class="row tap" data-open="breakdown"><div class="icon">⚖️</div>
+        <div class="main"><div class="title">${esc(m.balance.from)} → ${esc(m.balance.to)}</div><div class="sub">різниця по спільних витратах · деталі ›</div></div>
+        <div class="right">${money(m.balance.amount)}</div></div>`
+    : `<div class="row"><div class="icon">⚖️</div><div class="main"><div class="title">Ви в розрахунку</div></div></div>`;
   const maxCat = m.byCat.length ? m.byCat[0].sum : 1;
   const bars = m.byCat.slice(0, 5).map(c => `<div class="b"><span style="width:24px">${c.icon}</span><div class="track"><div class="fill" style="width:${Math.max(4, c.sum / maxCat * 100)}%"></div></div><span>${money(c.sum)}</span></div>`).join('');
   const pays = m.payments.map(p => `
@@ -630,7 +647,7 @@ function viewMoney() {
     <div class="row tap" data-exp="${e.id}">
       <div class="icon">${e.icon}</div>
       <div class="main"><div class="title">${esc(e.note || e.category)}${e.personal ? ' 🔒' : ''}</div>
-        <div class="sub">${esc(human(e.date))} · ${esc(e.who)}${!e.personal && e.share != null ? ` · <span class="sh">${e.mine ? esc(partnerName()) + ' закриває' : 'ви закриваєте'} ${money(e.share)}</span>` : ''}</div></div>
+        <div class="sub">${esc(human(e.date))} · ${esc(e.who)}${!e.personal && e.share != null ? ` · <span class="sh">${Number(e.share) === 0 ? 'без поділу' : (e.mine ? esc(partnerName()) + ' закриває' : 'ви закриваєте') + ' ' + money(e.share)}</span>` : ''}</div></div>
       <div class="right">${money(e.amount)}</div>
     </div>`).join('');
   const moves = (m.moves || []).map(x => `
@@ -658,7 +675,6 @@ function viewMoney() {
     </div>` : '';
   return `
     ${monoBlock}
-    <div class="card balance">${bal}</div>
     <div class="card pad" style="margin-top:10px">
       <div class="hint small">${esc(m.monthName[0].toUpperCase() + m.monthName.slice(1))}</div>
       <div style="font-size:24px;font-weight:700">${money(m.total)}</div>
@@ -669,7 +685,8 @@ function viewMoney() {
     <div class="card">${pays || `<div class="empty">Комуналка, інтернет, оренда, підписки – додайте, і я нагадаю за 3 дні</div>`}</div>
     <h2>Витрати цього місяця</h2>
     <div class="card">${exps || `<div class="empty">Поки порожньо</div>`}</div>
-    ${moves ? `<h2>Позики й розрахунки</h2><div class="card">${moves}</div>` : ''}
+    <h2>Між вами</h2>
+    <div class="card">${bal}${moves}</div>
     <h2>Автоматично з картки</h2>
     <div class="card"><div class="row tap" data-open="mono"><div class="icon">🏦</div>
       <div class="main"><div class="title">monobank</div><div class="sub">${mono.connected ? 'Підключено · ' + esc(mono.cards.join(', ')) : 'Покупки з картки приходитимуть самі'}</div></div>
@@ -726,7 +743,7 @@ function bindView() {
   $$('[data-mono]').forEach(b => b.onclick = () => sheetMono(b.dataset.mono));
   $$('[data-md]').forEach(b => b.onclick = () => { const [kind, txid] = b.dataset.md.split(/:(.*)/s); haptic('success'); enqueue('mono_decide', { txid, kind }, 600); });
   $$('[data-move]').forEach(b => b.onclick = () => sheetMove(b.dataset.move));
-  $$('[data-open]').forEach(b => b.onclick = () => ({ calAdd: sheetCalAdd, expAdd: () => sheetExpAdd('once'), settle: sheetSettle, mono: sheetMonoSettings })[b.dataset.open]());
+  $$('[data-open]').forEach(b => b.onclick = () => ({ calAdd: sheetCalAdd, expAdd: () => sheetExpAdd('once'), settle: sheetSettle, mono: sheetMonoSettings, breakdown: sheetBreakdown })[b.dataset.open]());
 }
 $$('nav.tabs button').forEach(b => b.onclick = () => {
   tab = b.dataset.tab; window.scrollTo(0, 0); render();
@@ -792,10 +809,10 @@ async function submit(btn, action, data, msg) {
 /* --- хто скільки закриває --- */
 function splitField(id, payerMe, amount, cur) {
   // cur: null – навпіл, число – своя сума (або все)
-  const split = cur == null ? 'half' : amount != null && Number(cur) === Number(amount) ? 'all' : 'custom';
+  const split = cur == null ? 'half' : Number(cur) === 0 ? 'none' : amount != null && Number(cur) === Number(amount) ? 'all' : 'custom';
   return `<div class="field split" id="${id}">
     <label data-split-label>${splitLabel(payerMe)}</label>
-    ${seg('split', [['half', 'Навпіл'], ['all', 'Усю суму'], ['custom', 'Свою суму']], split)}
+    ${seg('split', [['half', 'Навпіл'], ['all', 'Усю'], ['custom', 'Свою'], ['none', 'Нічого']], split)}
     <div class="amount" data-custom ${split === 'custom' ? '' : 'hidden'} style="padding:6px 10px"><input data-share inputmode="decimal" placeholder="0" value="${split === 'custom' ? esc(cur) : ''}" style="font-size:26px"><span>грн</span></div>
     <div class="calc" data-calc></div></div>`;
 }
@@ -808,8 +825,9 @@ function bindSplit(box, getAmount, getPayerMe) {
     const who = me ? esc(partnerName()) : 'ви';
     let t = '';
     if (a > 0) {
-      const sh = sp === 'all' ? a : sp === 'custom' ? num($('[data-share]', box).value) : a / 2;
-      if (!isNaN(sh) && sh >= 0 && sh <= a) t = 'Борг: ' + (me ? who + ' → вам ' : 'ви → ' + esc(partnerName()) + ' ') + money(sh) + (sp === 'custom' && sh > 0 && sh < a ? ' · решта ' + money(a - sh) + ' на ' + (me ? 'вас' : esc(partnerName())) : '');
+      const sh = sp === 'all' ? a : sp === 'none' ? 0 : sp === 'custom' ? num($('[data-share]', box).value) : a / 2;
+      if (sh === 0 && (sp === 'none' || $('[data-share]', box).value.trim() !== '')) t = 'Без поділу: витрату видно обом, різниця не змінюється';
+      else if (!isNaN(sh) && sh > 0 && sh <= a) t = (me ? who + ' → вам ' : 'ви → ' + esc(partnerName()) + ' ') + money(sh) + (sp === 'custom' && sh > 0 && sh < a ? ' · решта ' + money(a - sh) + ' на ' + (me ? 'вас' : esc(partnerName())) : '');
     }
     $('[data-calc]', box).innerHTML = t;
   };
@@ -817,6 +835,12 @@ function bindSplit(box, getAmount, getPayerMe) {
   $('[data-share]', box).oninput = upd;
   upd();
   return upd;
+}
+function moreWrap(inner, label = 'Більше') {
+  return `<button type="button" class="link" data-more style="display:block;margin:-4px 4px 12px;font-size:15px">${label} ›</button><div data-more-box hidden>${inner}</div>`;
+}
+function bindMore(r) {
+  $$('[data-more]', r).forEach(b => b.onclick = () => { b.hidden = true; b.nextElementSibling.hidden = false; });
 }
 function readSplit(box) {
   const split = segVal(box, 'split');
@@ -890,17 +914,18 @@ function sheetCal(type, id) {
 function sheetExpAdd(mode) {
   openSheet(`
     <h3>Нова витрата</h3>
-    ${seg('type', [['once', 'Разова'], ['regular', 'Щомісяця'], ['loan', 'Позика']], mode)}
+    ${seg('type', [['once', 'Разова'], ['regular', 'Щомісяця']], mode)}
     <div id="fOnce" ${mode === 'once' ? '' : 'hidden'}>
       <div class="field"><div class="amount"><input id="exAmount" inputmode="decimal" placeholder="0"><span>грн</span></div></div>
       <div class="field"><label>Категорія</label>${cats('продукти')}</div>
       <div class="field"><label>Опис (необов'язково)</label><input id="exNote" placeholder="АТБ, таксі додому…"></div>
       <div class="field"><label>Дата</label><input type="date" id="exDate" value="${S.today}" max="${S.today}"></div>
-      <div class="field"><div class="switch" id="exPersonal"><div class="t">🔒 Особиста<small>Бачите тільки ви, у баланс не йде</small></div><i></i></div></div>
+      <div class="field"><div class="switch" id="exPersonal"><div class="t">🔒 Особиста<small>Бачите тільки ви, у розрахунки не йде</small></div><i></i></div></div>
       <div id="sharedBox">
         <div class="field"><label>Хто платив</label>${seg('payer', [['me', 'Я'], ['partner', esc(partnerName())]], 'me')}</div>
-        ${splitField('exSplit', true, null, null)}
       </div>
+      ${moreWrap(`<div id="splitWrap">${splitField('exSplit', true, null, null)}</div>
+        <button type="button" class="btn ghost" id="toLoan" style="margin-top:-4px">💸 Це позика, а не витрата</button>`)}
     </div>
     <div id="fRegular" ${mode === 'regular' ? '' : 'hidden'}>
       <div class="field"><label>Назва</label><input id="pTitle" placeholder="Інтернет, оренда, комуналка…"></div>
@@ -915,22 +940,28 @@ function sheetExpAdd(mode) {
       <div class="field"><div class="amount"><input id="lnAmount" inputmode="decimal" placeholder="0"><span>грн</span></div></div>
       <div class="field"><label>На що (необов'язково)</label><input id="lnNote" placeholder="Квитки, ремонт телефона…"></div>
       <div class="field"><label>Дата</label><input type="date" id="lnDate" value="${S.today}" max="${S.today}"></div>
-      <p class="hint small" style="margin:-4px 4px 12px">Позика не рахується у витрати місяця – вона лише змінює, хто кому винен</p>
+      <p class="hint small" style="margin:-4px 4px 12px">Позика не рахується у витрати місяця, лише в різницю між вами</p>
+      <button type="button" class="link" id="fromLoan" style="margin:0 4px 12px;font-size:15px">‹ Назад до витрати</button>
     </div>
     <button class="btn primary" id="save">Зберегти</button>`, r => {
     const sw = $('#exPersonal', r), box = $('#exSplit', r);
+    let cur = mode;
+    const show = v => { cur = v; $('#fOnce', r).hidden = v !== 'once'; $('#fRegular', r).hidden = v !== 'regular'; $('#fLoan', r).hidden = v !== 'loan';
+      $('[data-seg="type"]', r).hidden = v === 'loan'; };
+    bindMore(r);
+    $('#toLoan', r).onclick = () => { show('loan'); $('h3', r).textContent = 'Позика'; setTimeout(() => $('#lnAmount', r).focus(), 50); };
+    $('#fromLoan', r).onclick = () => { show('once'); $('h3', r).textContent = 'Нова витрата'; };
     const upd = bindSplit(box, () => num($('#exAmount', r).value), () => segVal(r, 'payer') !== 'partner');
     bindSegs(r, (name, v) => {
-      if (name === 'type') { $('#fOnce', r).hidden = v !== 'once'; $('#fRegular', r).hidden = v !== 'regular'; $('#fLoan', r).hidden = v !== 'loan';
-        if (v === 'loan') setTimeout(() => $('#lnAmount', r).focus(), 50); }
+      if (name === 'type') show(v);
       if (name === 'payer' || name === 'split') upd();
     });
     $('#exAmount', r).addEventListener('input', upd);
     $$('.cats', r).forEach(bindCats);
-    sw.onclick = () => { sw.classList.toggle('on'); $('#sharedBox', r).hidden = sw.classList.contains('on'); };
+    sw.onclick = () => { sw.classList.toggle('on'); const on = sw.classList.contains('on'); $('#sharedBox', r).hidden = on; $('#splitWrap', r).hidden = on; };
     if (mode === 'once') setTimeout(() => $('#exAmount', r).focus(), 300);
     $('#save', r).onclick = e => {
-      const t = segVal(r, 'type');
+      const t = cur;
       if (t === 'once') {
         const personal = sw.classList.contains('on');
         submit(e.target, 'exp_add', Object.assign({ amount: $('#exAmount', r).value.replace(',', '.'), category: catVal($('#fOnce', r)), note: $('#exNote', r).value,
@@ -955,12 +986,13 @@ function sheetPay(id) {
       <button class="btn light" id="unpaid">↩️ Зняти позначку «оплачено»</button>` : `
       <div class="field"><label>Скільки сплатили</label><div class="amount"><input id="paySum" inputmode="decimal" placeholder="0" value="${p.amount != null ? p.amount : ''}"><span>грн</span></div></div>
       <div class="field"><label>Хто заплатив</label>${seg('payer', [['me', 'Я'], ['partner', esc(partnerName())]], me)}</div>
-      ${splitField('paySplit', me === 'me', null, null)}
+      ${moreWrap(splitField('paySplit', me === 'me', null, null), 'Поділити інакше')}
       <button class="btn primary" id="paid">✅ Оплачено</button>
       <p class="hint small" style="text-align:center">Сума запишеться у спільні витрати</p>`}
     <button class="btn danger" id="del">Видалити платіж</button>`, r => {
     if (p.paid) { bindSegs(r); $('#unpaid', r).onclick = e => submit(e.target, 'pay_unpaid', { id }); }
     else {
+      bindMore(r);
       const box = $('#paySplit', r);
       const upd = bindSplit(box, () => num($('#paySum', r).value), () => segVal(r, 'payer') !== 'partner');
       bindSegs(r, () => upd());
@@ -976,7 +1008,7 @@ function sheetExp(id) {
     <div class="info"><div class="hint small">${esc(human(e.date))} · ${esc(e.who)}</div>
       <div class="big">${e.icon} ${money(e.amount)}</div>
       <div class="hint">${esc(e.category)}${e.note ? ' · ' + esc(e.note) : ''}</div>
-      <div class="hint small" style="margin-top:6px">${e.personal ? '🔒 Особиста – бачите тільки ви' : e.share == null ? '👥 Спільна – навпіл' : '👥 Спільна – ' + (e.mine ? esc(partnerName()) + ' закриває ' : 'ви закриваєте ') + money(e.share)}</div></div>
+      <div class="hint small" style="margin-top:6px">${e.personal ? '🔒 Особиста – бачите тільки ви' : e.share == null ? '👥 Спільна – навпіл' : Number(e.share) === 0 ? '👥 Спільна – без поділу' : '👥 Спільна – ' + (e.mine ? esc(partnerName()) + ' закриває ' : 'ви закриваєте ') + money(e.share)}</div></div>
     ${e.personal ? '' : `<button class="btn light" id="share">⚖️ Змінити, хто скільки закриває</button>`}
     ${e.mine ? `<button class="btn light" id="kind">${e.personal ? '👥 Зробити спільною' : '🔒 Зробити особистою'}</button>` : ''}
     <button class="btn danger" id="del">Видалити витрату</button>`, r => {
@@ -1015,12 +1047,13 @@ function sheetMono(txid) {
     <div class="info" style="text-align:center"><div class="hint small">🏦 monobank · ${esc(human(p.date))}</div>
       <div class="big" style="font-size:28px">${money(p.amount)}</div><div class="hint">${esc(p.desc)}</div></div>
     <div class="field"><label>Категорія</label>${cats(p.category)}</div>
-    ${splitField('mSplit', true, p.amount, null)}
+    ${moreWrap(splitField('mSplit', true, p.amount, null), 'Поділити інакше')}
     <button class="btn primary" data-k="s">👥 Спільна</button>
     <button class="btn light" data-k="p">🔒 Особиста – бачу тільки я</button>
     <button class="btn light" data-k="a">👥 Завжди спільна: «${esc(p.desc)}»</button>
     <button class="btn danger" data-k="x">🙈 Не записувати</button>`, r => {
     bindCats(r);
+    bindMore(r);
     const box = $('#mSplit', r);
     bindSplit(box, () => p.amount, () => true);
     bindSegs(r);
@@ -1070,6 +1103,31 @@ function sheetMonoSettings() {
     $('#off', r).onclick = e => askConfirm('Відключити monobank? Нові покупки перестануть приходити', () => submit(e.target, 'mono_disconnect', {}));
   });
 }
+function sheetBreakdown() {
+  const b = S.money.balance; if (!b) return;
+  const dir = b.iOwe ? -1 : 1; // + у списку = борг росте
+  const list = (S.money.breakdown || []).slice().reverse();
+  const sub = x => {
+    if (x.kind === 'older') return 'усе, що було до цього, одним рядком';
+    if (x.kind === 'loan') return esc(human(x.date)) + ' · позичив(-ла) ' + esc(x.payer);
+    if (x.kind === 'settle') return esc(human(x.date)) + ' · віддав(-ла) ' + esc(x.payer);
+    const closer = x.mine ? esc(partnerName()) : 'ви';
+    return esc(human(x.date)) + ' · платив(-ла) ' + esc(x.payer) + ' ' + money(x.amount) + ' · ' +
+      (x.share == null ? 'навпіл' : Number(x.share) === Number(x.amount) ? 'усе на ' + (x.mine ? esc(partnerName()) : 'вас') : closer + ' – ' + money(x.share));
+  };
+  const rows = list.map(x => {
+    const v = Math.round(x.net * dir * 100) / 100;
+    return `<div class="row"><div class="icon">${x.icon}</div>
+      <div class="main"><div class="title">${esc(x.title)}</div><div class="sub">${sub(x)}</div></div>
+      <div class="right" style="font-weight:600;${v < 0 ? 'color:var(--ok)' : ''}">${v < 0 ? '−' : '+'}${money(Math.abs(v))}</div></div>`;
+  }).join('');
+  openSheet(`
+    <div class="info" style="text-align:center"><div class="hint">${esc(b.from)} → ${esc(b.to)}</div><div class="big" style="font-size:28px">${money(b.amount)}</div></div>
+    <p class="hint small" style="margin:0 4px 10px">Записи після останнього розрахунку. <b>+</b> – різниця збільшилась, <span style="color:var(--ok)"><b>−</b></span> – зменшилась</p>
+    <div class="card" style="margin-bottom:12px">${rows || '<div class="empty">Деталі з\'являться після оновлення</div>'}</div>
+    <button class="btn light" id="settle">🤝 Розрахувались</button>
+    <button class="btn ghost" id="close">Закрити</button>`, r => { $('#close', r).onclick = closeSheet; $('#settle', r).onclick = sheetSettle; });
+}
 function sheetSettle() {
   const b = S.money.balance; if (!b) return;
   openSheet(`
@@ -1103,8 +1161,15 @@ function demoState() {
     money: {
       monthName: 'листопад 2026', total: 19865, shared: 19665, personal: 200,
       byCat: [{ name: 'комуналка', icon: '💡', sum: 18415 }, { name: 'продукти', icon: '🛒', sum: 1250 }, { name: 'подарунки', icon: '🎁', sum: 200 }],
-      balance: { from: 'Ксюша', to: 'Валік', amount: 832.5, iOwe: false },
+      balance: { from: 'Ксюша', to: 'Валік', amount: 900, iOwe: false },
       moves: [{ id: 'm1', kind: 'loan', date: addDays(today, -3), amount: 500, from: 'Валік', to: 'Ксюша', note: 'квитки' }],
+      breakdown: [
+        { id: 'p3x', date: addDays(today, -6), kind: 'shared', icon: '💡', title: 'Оренда', amount: 18000, payer: 'Валік', mine: true, share: null, net: 9000 },
+        { id: 's0', date: addDays(today, -5), kind: 'settle', icon: '🤝', title: 'Розрахунок', amount: 8500, payer: 'Ксюша', mine: false, share: null, net: -8500 },
+        { id: 'm1', date: addDays(today, -3), kind: 'loan', icon: '💸', title: 'Позика: квитки', amount: 500, payer: 'Валік', mine: true, share: null, net: 500 },
+        { id: 'x3', date: addDays(today, -1), kind: 'shared', icon: '🛒', title: 'Сільпо', amount: 800, payer: 'Ксюша', mine: false, share: null, net: -400 },
+        { id: 'x1', date: today, kind: 'shared', icon: '🛒', title: 'АТБ', amount: 450, payer: 'Валік', mine: true, share: 300, net: 300 },
+      ],
       payments: [
         { id: 'p1', title: 'Інтернет', day: 22, amount: 415, who: 'me', whoName: 'Валік', category: 'комуналка', paid: false, left: 3 },
         { id: 'p2', title: 'Комуналка', day: 25, amount: null, who: '', whoName: '', category: 'комуналка', paid: false, left: 6 },
